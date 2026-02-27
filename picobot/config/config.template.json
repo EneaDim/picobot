@@ -1,0 +1,53 @@
+{
+  "workspace": ".picobot/workspace",
+  "default_kb_name": "default",
+  "default_language": "it",
+  "ollama": {
+    "base_url": "http://localhost:11434",
+    "model": "qwen2.5:3b-instruct-q4_0",
+    "timeout_s": 120
+  },
+  "use_embeddings": false,
+  "embedding_model": "nomic-embed-text:latest",
+  "summarizer_model": "qwen2.5:3b-instruct-q4_0",
+  "memory_limits": {
+    "max_history_lines": 400,
+    "tail_lines": 120
+  },
+  "retrieval": {
+    "enabled": true,
+    "bm25_candidates": 12,
+    "top_k": 3,
+    "max_embed_chars": 4000,
+    "max_context_chars": 5000,
+    "bm25_k1": 1.2,
+    "bm25_b": 0.75
+  },
+  "tools": {
+    "base_dir": ".picobot/tools",
+    "whisper_cpp_dir": ".picobot/tools/whisper.cpp",
+    "whisper_model": ".picobot/tools/whisper.cpp/models/ggml-small.bin",
+    "ytdlp_bin": ".picobot/tools/yt-dlp/bin",
+    "ffmpeg_bin": ".picobot/tools/ffmpeg/bin",
+    "arecord_bin": ".picobot/tools/arecord/bin",
+    "aplay_bin": ".picobot/tools/aplay/bin",
+    "piper_bin": ".picobot/tools/piper/bin",
+    "piper_model_it": ".picobot/tools/piper/models/it_IT-paola-medium.onnx",
+    "piper_model_en": ".picobot/tools/piper/models/en_US-lessac-medium.onnx"
+  },
+  "ui": {
+    "use_emojis": true,
+    "use_prompt_toolkit": true,
+    "vi_mode": false
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+  },
+  "debug": {
+    "enabled": true
+  },
+  "web": {
+    "enabled": false
+  }
+}
