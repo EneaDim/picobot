@@ -38,8 +38,18 @@ class UIConfig(BaseModel):
 class TelegramConfig(BaseModel):
     enabled: bool = False
     bot_token: str = ""
+
+    # Legacy flags (kept for backward compatibility)
     voice_stt_enabled: bool = True
     echo_transcript: bool = False
+
+    # New flags for richer Telegram automations
+    kb_per_chat: bool = True
+    pdf_auto_ingest: bool = True
+    stt_auto: bool = True
+    max_voice_seconds: int = 240
+    send_transcript_flag: bool = False
+    debug_terminal: bool = False
 
 
 class ToolsConfig(BaseModel):

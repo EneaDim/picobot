@@ -204,8 +204,11 @@ def _install_piper(piper_bin_cfg: Path, model_it: Path, model_en: Path) -> None:
     # Create/overwrite wrapper script that sets runtime env
     wrapper = """#!/usr/bin/env bash
 set -euo pipefail
+
+HERE=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"
+ROOT=\"$(cd \"$HERE/..\" && pwd)\"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export LD_LIBRARY_PATH="$ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$HERE/lib:$ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 if [ -d "$ROOT/share/espeak-ng-data" ]; then
   export ESPEAK_DATA_PATH="$ROOT/share/espeak-ng-data"
 fi

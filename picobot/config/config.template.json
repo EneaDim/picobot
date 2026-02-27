@@ -27,18 +27,18 @@
     "base_dir": ".picobot/tools",
     "whisper_cpp_dir": ".picobot/tools/whisper.cpp",
     "whisper_model": ".picobot/tools/whisper.cpp/models/ggml-small.bin",
-  
+    "whisper_cpp_main_path": ".picobot/tools/whisper.cpp/build/bin/whisper-cli",
     "ytdlp_bin": ".picobot/tools/yt-dlp/bin/yt-dlp",
     "ffmpeg_bin": ".picobot/tools/ffmpeg/bin/ffmpeg",
-  
     "arecord_bin": ".picobot/tools/arecord/bin/arecord",
     "aplay_bin": ".picobot/tools/aplay/bin/aplay",
-  
     "piper_bin": ".picobot/tools/piper/bin/piper",
     "piper_model_it": ".picobot/tools/piper/models/it_IT-paola-medium.onnx",
     "piper_model_en": ".picobot/tools/piper/models/en_US-lessac-medium.onnx",
-  
-    "ytdlp_args": ["--js-runtimes", "node:/usr/bin/node"]
+    "ytdlp_args": [
+      "--js-runtimes",
+      "node:/usr/bin/node"
+    ]
   },
   "ui": {
     "use_emojis": true,
@@ -46,8 +46,39 @@
     "vi_mode": false
   },
   "telegram": {
-    "enabled": false,
-    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+    "enabled": true,
+    "bot_token": "YOUR_BOT_TOKEN",
+    "kb_per_chat": true,
+    "pdf_auto_ingest": true,
+    "stt_auto": true,
+    "max_voice_seconds": 240,
+    "send_transcript_flag": false,
+    "debug_terminal": true
+  },
+  "podcast": {
+    "enabled": true,
+    "tts_backend": "piper",
+    "audio_format": "mp3",
+    "send_script_text": false,
+    "send_transcript_flag": false,
+    "max_minutes": 8,
+    "target_words_per_minute": 150,
+  
+    "triggers": {
+      "it": ["voglio un podcast su", "fammi un podcast su"],
+      "en": ["i want a podcast about", "make a podcast about"]
+    },
+  
+    "voices": {
+      "it": {
+        "narrator": { "voice_id": "it_IT-paola-medium" },
+        "expert":   { "voice_id": "it_IT-aurora-medium" }
+      },
+      "en": {
+        "narrator": { "voice_id": "en_US-amy-medium" },
+        "expert":   { "voice_id": "en_US-ryan-high" }
+      }
+    }
   },
   "debug": {
     "enabled": true

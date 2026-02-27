@@ -1,4 +1,4 @@
-.PHONY: help install dev test lint fmt run init-tools chat telegram clean clean-pyc clean-build
+.PHONY: help install dev test lint fmt init init-force init-tools chat telegram clean clean-pyc clean-build
 
 PYTHON ?= python
 PIP ?= pip
@@ -32,6 +32,12 @@ lint:
 fmt:
 	$(PYTHON) -m ruff format .
 
+init:
+	picobot init
+
+init-force:
+	picobot init --force
+
 init-tools:
 	$(PYTHON) -m picobot.tools.init_tools
 
@@ -53,8 +59,3 @@ clean-pyc:
 clean-build:
 	@rm -rf build dist *.egg-info
 
-init:
-	picobot init
-
-init-force:
-	picobot init --force

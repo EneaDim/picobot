@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from picobot.ui.commands import handle_command
 import asyncio
 import json
 
@@ -152,6 +153,15 @@ def chat(session: str = typer.Option("default", "--session", "-s")):
                     msg = _strip_emojis(msg)
                 with st.show(msg):
                     await asyncio.sleep(0)
+
+            # Shared command handling (/help, /sessions, /use, ...)
+            cr = handle_command(user, session=current, session_manager=sm if 'sm' in locals() else None)
+            if cr.handled:
+                # If command switches session, update local session variable
+                if cr.new_session_id and 'sm' in locals():
+                    current = sm.get(cr.new_session_id)
+                print(cr.reply)
+                continue
 
             res = await orch.one_turn(current, user, status=status_cb)
             st.clear()
