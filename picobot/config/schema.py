@@ -48,6 +48,7 @@ class ToolsConfig(BaseModel):
     whisper_cpp_dir: str = ""
     whisper_model: str = ""
     ytdlp_bin: str = ""
+    ytdlp_args: list[str] = Field(default_factory=list)
     ffmpeg_bin: str = "ffmpeg"
     arecord_bin: str = "arecord"
     aplay_bin: str = "aplay"

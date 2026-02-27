@@ -5,18 +5,18 @@
   "ollama": {
     "base_url": "http://localhost:11434",
     "model": "qwen2.5:3b-instruct-q4_0",
-    "timeout_s": 120
+    "timeout_s": 600
   },
   "use_embeddings": false,
   "embedding_model": "nomic-embed-text:latest",
   "summarizer_model": "qwen2.5:3b-instruct-q4_0",
   "memory_limits": {
-    "max_history_lines": 400,
-    "tail_lines": 120
+    "max_history_lines": 300,
+    "tail_lines": 900
   },
   "retrieval": {
     "enabled": true,
-    "bm25_candidates": 12,
+    "bm25_candidates": 9,
     "top_k": 3,
     "max_embed_chars": 4000,
     "max_context_chars": 5000,
@@ -27,13 +27,18 @@
     "base_dir": ".picobot/tools",
     "whisper_cpp_dir": ".picobot/tools/whisper.cpp",
     "whisper_model": ".picobot/tools/whisper.cpp/models/ggml-small.bin",
-    "ytdlp_bin": ".picobot/tools/yt-dlp/bin",
-    "ffmpeg_bin": ".picobot/tools/ffmpeg/bin",
-    "arecord_bin": ".picobot/tools/arecord/bin",
-    "aplay_bin": ".picobot/tools/aplay/bin",
-    "piper_bin": ".picobot/tools/piper/bin",
+  
+    "ytdlp_bin": ".picobot/tools/yt-dlp/bin/yt-dlp",
+    "ffmpeg_bin": ".picobot/tools/ffmpeg/bin/ffmpeg",
+  
+    "arecord_bin": ".picobot/tools/arecord/bin/arecord",
+    "aplay_bin": ".picobot/tools/aplay/bin/aplay",
+  
+    "piper_bin": ".picobot/tools/piper/bin/piper",
     "piper_model_it": ".picobot/tools/piper/models/it_IT-paola-medium.onnx",
-    "piper_model_en": ".picobot/tools/piper/models/en_US-lessac-medium.onnx"
+    "piper_model_en": ".picobot/tools/piper/models/en_US-lessac-medium.onnx",
+  
+    "ytdlp_args": ["--js-runtimes", "node:/usr/bin/node"]
   },
   "ui": {
     "use_emojis": true,

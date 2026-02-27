@@ -52,3 +52,9 @@ clean-pyc:
 
 clean-build:
 	@rm -rf build dist *.egg-info
+
+init:
+	picobot init
+
+init-force:
+	picobot init --force

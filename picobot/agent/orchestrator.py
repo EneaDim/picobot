@@ -78,6 +78,13 @@ class Orchestrator:
         self.tools = ToolRegistry()
 
     def _register_tools(self) -> None:
+        def _call_factory_compat(factory, *args, **kwargs):
+            try:
+                return factory(*args, **kwargs)
+            except TypeError:
+                # Backward-compat for monkeypatched/older factory signatures
+                return factory(*args)
+
         # idempotent (tests may monkeypatch factories after Orchestrator init)
         ytdlp_bin = getattr(self.cfg.tools, "ytdlp_bin", "") if hasattr(self.cfg, "tools") else ""
         ytdlp_args = getattr(self.cfg.tools, "ytdlp_args", None) if hasattr(self.cfg, "tools") else None
@@ -105,8 +112,8 @@ class Orchestrator:
             return (resp.content or "").strip()
 
         for tool in [
-            make_yt_transcript_tool(ytdlp_bin, ytdlp_args=ytdlp_args),
-            make_yt_summary_tool(ytdlp_bin, llm_summarize, ytdlp_args=ytdlp_args),
+            _call_factory_compat(make_yt_transcript_tool, ytdlp_bin, ytdlp_args=ytdlp_args),
+            _call_factory_compat(make_yt_summary_tool, ytdlp_bin, llm_summarize, ytdlp_args=ytdlp_args),
             make_kb_ingest_pdf_tool(self.docs_root),
         ]:
             try:
