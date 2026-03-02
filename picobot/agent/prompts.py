@@ -8,15 +8,60 @@ _WORD_RX = re.compile(r"[a-zA-ZÀ-ÿ0-9_']+")
 _ACCENT_RX = re.compile(r"[àèéìòù]", re.IGNORECASE)
 
 _IT_HINTS = {
-    "il", "lo", "la", "gli", "le", "un", "uno", "una",
-    "che", "non", "per", "con", "come", "cosa", "quale", "quali",
-    "voglio", "fammi", "puoi", "podcast", "grazie",
-    "perché", "anche", "senza", "sopra", "sotto", "dove", "quando",
+    "il",
+    "lo",
+    "la",
+    "gli",
+    "le",
+    "un",
+    "uno",
+    "una",
+    "che",
+    "non",
+    "per",
+    "con",
+    "come",
+    "cosa",
+    "quale",
+    "quali",
+    "voglio",
+    "fammi",
+    "puoi",
+    "podcast",
+    "grazie",
+    "perché",
+    "anche",
+    "senza",
+    "sopra",
+    "sotto",
+    "dove",
+    "quando",
 }
+
 _EN_HINTS = {
-    "the", "a", "an", "and", "or", "with", "about", "what", "which", "who",
-    "i", "want", "make", "podcast", "please", "thanks",
-    "why", "also", "without", "above", "below", "where", "when",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "with",
+    "about",
+    "what",
+    "which",
+    "who",
+    "i",
+    "want",
+    "make",
+    "podcast",
+    "please",
+    "thanks",
+    "why",
+    "also",
+    "without",
+    "above",
+    "below",
+    "where",
+    "when",
 }
 
 
@@ -62,14 +107,14 @@ class PromptPack:
             return (
                 "Sei un router. Decidi: tool o chat.\n"
                 "Output SOLO JSON in una riga:\n"
-                "{\"route\":\"tool|chat\",\"tool_name\":\"...\",\"args\":{...}}\n"
+                '{"route":"tool|chat","tool_name":"...","args":{...}}\n'
                 "Regole: azione/recupero -> tool; altrimenti chat. args solo validi.\n"
                 f"Richiesta:\n{user_input}"
             )
         return (
             "You are a router. Decide: tool or chat.\n"
             "Output ONLY one-line JSON:\n"
-            "{\"route\":\"tool|chat\",\"tool_name\":\"...\",\"args\":{...}}\n"
+            '{"route":"tool|chat","tool_name":"...","args":{...}}\n'
             "Rules: action/retrieval -> tool; otherwise chat. args only valid.\n"
             f"Request:\n{user_input}"
         )
@@ -89,16 +134,8 @@ class PromptPack:
     def summarizer(self, text: str, max_chars: int) -> str:
         mc = int(max_chars)
         if self.lang == "it":
-            return (
-                f"Riassumi in punti elenco. Max {mc} caratteri.\n"
-                "Niente premesse.\n\n"
-                f"Testo:\n{text}"
-            )
-        return (
-            f"Summarize in bullet points. Max {mc} characters.\n"
-            "No preface.\n\n"
-            f"Text:\n{text}"
-        )
+            return f"Riassumi in punti elenco. Max {mc} caratteri.\nNiente premesse.\n\nTesto:\n{text}"
+        return f"Summarize in bullet points. Max {mc} characters.\nNo preface.\n\nText:\n{text}"
 
     def podcast_writer(self, topic: str, target_words: int, hard_cap_words: int = 300) -> str:
         tw = max(90, int(target_words))
@@ -107,27 +144,25 @@ class PromptPack:
         if self.lang == "it":
             return (
                 "Scrivi un dialogo REALISTICO per un podcast. SOLO dialogo.\n"
-                "Scrivi SOLO in ITALIANO.\n"
                 f"Target ~{tw} parole. HARD CAP {cap} parole.\n"
                 "Output: SOLO righe che iniziano con NARRATOR: o EXPERT:.\n"
                 "INIZIA SUBITO col dialogo: nessuna introduzione/meta (vietato: 'Ecco...', 'Ecco il dialogo', 'Oggi abbiamo').\n"
                 "Niente liste, niente markdown, niente parentesi quadre.\n"
                 "Stile: conversazione naturale. Se ci sono nomi/fatti dubbi, l'EXPERT lo dice e resta prudente.\n"
                 "Vincoli: 8-14 battute, ogni battuta 1-2 frasi, alterna spesso.\n"
-                "Divieti: 'Ecco', 'punti chiave', placeholder, '...'.\n"
+                "Divieti: placeholder, '...'.\n"
                 f"Tema: {topic}"
             )
 
         return (
             "Write a REALISTIC podcast dialogue. Dialogue ONLY.\n"
-            "Write ONLY in ENGLISH.\n"
             f"Target ~{tw} words. HARD CAP {cap} words.\n"
             "Output: ONLY lines starting with NARRATOR: or EXPERT:.\n"
             "START IMMEDIATELY with dialogue: no meta/preface (forbidden: 'Here is...', 'Today we have').\n"
             "No lists, no markdown, no bracket tags.\n"
             "Style: natural conversation. If facts/names are doubtful, the EXPERT must say so and be cautious.\n"
             "Constraints: 8-14 turns, 1-2 sentences per turn, alternate often.\n"
-            "Avoid: 'Here are key points', placeholders, '...'.\n"
+            "Avoid: placeholders, '...'.\n"
             f"Topic: {topic}"
         )
 
@@ -156,3 +191,38 @@ def kb_user_prompt(lang: str, question: str, context: str) -> str:
         "If the answer is not in the context, write: 'not found'.\n\n"
         f"QUESTION:\n{question}\n\nDOCUMENT CONTEXT:\n{context}"
     )
+
+
+def tool_protocol_system(tool_names: list[str]) -> str:
+    names = ", ".join(tool_names)
+    return (
+        "You are a tool-using assistant.\n"
+        "If you need to call a tool, respond with ONLY a JSON object like:\n"
+        '{"type":"tool","name":"TOOL_NAME","args":{...}}\n'
+        "If you are answering the user, respond with ONLY a JSON object like:\n"
+        '{"type":"final","content":"..."}\n'
+        "Rules:\n"
+        "- Output must be valid JSON.\n"
+        f"- TOOL_NAME must be one of: {names}\n"
+    )
+
+
+def youtube_summarizer_system() -> str:
+    return "You are a concise summarizer."
+
+
+def youtube_summarizer_user_prompt(transcript: str, url: str, lang: str, max_chars: int) -> str:
+    pp = PromptPack(lang=lang)
+    return f"URL: {url}\n\n" + pp.summarizer(text=transcript, max_chars=max_chars)
+
+
+def podcast_system(lang: str) -> str:
+    if (lang or "").lower().startswith("it"):
+        return "Output SOLO righe che iniziano con NARRATOR: o EXPERT:. SOLO dialogo."
+    return "Output ONLY lines starting with NARRATOR: or EXPERT:. Dialogue ONLY."
+
+
+def ping_reply(lang: str) -> str:
+    if (lang or "").lower().startswith("it"):
+        return "Pong! Come posso aiutarti?"
+    return "Pong! How can I help?"

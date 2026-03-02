@@ -4,6 +4,7 @@ import json
 import httpx
 
 from picobot.providers.types import ChatResponse, ToolCall
+from picobot.agent.prompts import tool_protocol_system
 
 
 class OllamaProviderError(Exception):
@@ -54,16 +55,7 @@ class OllamaProvider:
         # Tools enabled: use minimal JSON tool protocol
         tool_names = [t["function"]["name"] for t in (tools or [])]
 
-        sys_tooling = (
-            "You are a tool-using assistant.\n"
-            "If you need to call a tool, respond with ONLY a JSON object like:\n"
-            "{\"type\":\"tool\",\"name\":\"TOOL_NAME\",\"args\":{...}}\n"
-            "If you are answering the user, respond with ONLY a JSON object like:\n"
-            "{\"type\":\"final\",\"content\":\"...\"}\n"
-            "Rules:\n"
-            "- Output must be valid JSON.\n"
-            "- TOOL_NAME must be one of: " + ", ".join(tool_names) + "\n"
-        )
+        sys_tooling = tool_protocol_system(tool_names)
 
         payload = {
             "model": self.model,

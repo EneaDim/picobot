@@ -10,7 +10,15 @@ from typing import Awaitable, Callable
 
 from picobot.agent.router import deterministic_route, RouteDecision
 from picobot.agent.memory import make_memory_manager
-from picobot.agent.prompts import PromptPack, detect_language, system_base_context
+from picobot.agent.prompts import (
+    PromptPack,
+    detect_language,
+    system_base_context,
+    kb_user_prompt,
+    ping_reply,
+    youtube_summarizer_system,
+    youtube_summarizer_user_prompt,
+)
 from picobot.retrieval.store import KBStore
 from picobot.config.schema import Config
 from picobot.providers.ollama import OllamaProvider, OllamaTimeout, OllamaProviderError
@@ -98,20 +106,22 @@ class Orchestrator:
         ytdlp_args = ytdlp_args or []
 
         async def llm_summarize(transcript: str, url: str, lang: str | None):
-            prompt = (
-                "Summarize this YouTube transcript.\n"
-                "Return:\n"
-                "- 5 bullet key points\n"
-                "- 1 short paragraph summary\n"
-                "Keep it concise.\n"
-            )
-            if lang:
-                prompt += f"Write in language: {lang}\n"
+            # Language must follow the transcript language (provided by the tool)
+            use_lang = (lang or "").strip() or getattr(self.cfg, "default_language", "it")
+            max_chars = int(getattr(getattr(self.cfg, "summary", None), "max_chars", 12000) or 12000)
 
             resp = await self.provider.chat(
                 messages=[
-                    {"role": "system", "content": "You are a concise summarizer."},
-                    {"role": "user", "content": f"URL: {url}\n\nTRANSCRIPT:\n{transcript}\n\n{prompt}"},
+                    {"role": "system", "content": youtube_summarizer_system()},
+                    {
+                        "role": "user",
+                        "content": youtube_summarizer_user_prompt(
+                            transcript=transcript,
+                            url=url,
+                            lang=use_lang,
+                            max_chars=max_chars,
+                        ),
+                    },
                 ],
                 tools=None,
                 max_tokens=650,
@@ -134,7 +144,13 @@ class Orchestrator:
             return
         self._register_tools()
 
-    async def one_turn(self, session, user_text: str, status: StatusCb | None = None) -> TurnResult:
+    async def one_turn(
+        self,
+        session,
+        user_text: str,
+        status: StatusCb | None = None,
+        input_lang: str | None = None,
+    ) -> TurnResult:
         mm = make_memory_manager(self.cfg, session, self.workspace)
 
         if status:
@@ -142,8 +158,9 @@ class Orchestrator:
 
         # deterministic ping
         if (user_text or "").strip().lower() == "ping":
+            lang = input_lang or detect_language(user_text, default=getattr(self.cfg, "default_language", "it"))
             mm.append_turn("user", user_text)
-            content = "Pong! How can I assist you today?"
+            content = ping_reply(lang)
             mm.append_turn("assistant", content)
             return TurnResult(content=content, action="chat", kb_mode="keep", reason="very short")
 
@@ -198,7 +215,7 @@ class Orchestrator:
             return TurnResult(content=content, action="chat", kb_mode="keep", reason=f"memory match ({score:.2f})")
 
         # prompt context
-        lang = detect_language(user_text, default=getattr(self.cfg, "default_language", "it"))
+        lang = (input_lang or "").strip() or detect_language(user_text, default=getattr(self.cfg, "default_language", "it"))
 
         mem = mm.read_memory().strip()
         summ = mm.read_summary().strip()
@@ -233,7 +250,7 @@ class Orchestrator:
             try:
                 tool = self.tools.get(tool_name)
             except Exception:
-                content = "Unknown tool for this request."
+                content = ("Tool sconosciuto per questa richiesta." if lang == "it" else "Unknown tool for this request.")
                 mm.append_turn("assistant", content)
                 return TurnResult(content=content, action="tool", kb_mode="keep", reason="no tool")
 
@@ -241,14 +258,14 @@ class Orchestrator:
             if tool_name in {"yt_transcript", "yt_summary"}:
                 url = _extract_first_url(user_text)
                 if not url:
-                    content = "Missing YouTube URL."
+                    content = ("Manca l'URL YouTube." if lang == "it" else "Missing YouTube URL.")
                     mm.append_turn("assistant", content)
                     return TurnResult(content=content, action="tool", kb_mode="keep", reason="missing url")
                 args = {"url": url}
             elif tool_name == "kb_ingest_pdf":
                 pdfp = _extract_pdf_path(user_text)
                 if not pdfp:
-                    content = "Missing .pdf path. Example: ingest pdf ./docs/file.pdf"
+                    content = ("Manca il percorso .pdf. Esempio: ingest pdf ./docs/file.pdf" if lang == "it" else "Missing .pdf path. Example: ingest pdf ./docs/file.pdf")
                     mm.append_turn("assistant", content)
                     return TurnResult(content=content, action="tool", kb_mode="keep", reason="missing pdf")
                 kb_name = (session.get_state() or {}).get("kb_name", getattr(self.cfg, "default_kb_name", "default"))
@@ -309,11 +326,7 @@ class Orchestrator:
                 resp = await self.provider.chat(
                     messages=[
                         {"role": "system", "content": base_context + memory_context},
-                        {"role": "user", "content": (
-                            "Answer using ONLY DOCUMENT CONTEXT. If the answer is not in the context, say not found.\n\n"
-                            f"QUESTION:\n{user_text}\n\n"
-                            f"DOCUMENT CONTEXT:\n{context}\n"
-                        )},
+                        {"role": "user", "content": kb_user_prompt(lang=lang, question=user_text, context=context)},
                     ],
                     tools=None,
                     max_tokens=650, temperature=0.0,

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from picobot.agent.prompts import PromptPack, detect_language
+from picobot.agent.prompts import PromptPack, podcast_system, detect_language
 
 
 def _pod_dbg(cfg, msg: str) -> None:
@@ -399,15 +399,9 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
     pp = PromptPack(lang=lang)
     prompt = pp.podcast_writer(topic=topic, target_words=target_words, hard_cap_words=hard_cap_words)
 
-    sys_msg = (
-        "Write ONLY in ENGLISH. Output ONLY lines starting with NARRATOR: or EXPERT:."
-        if lang == "en"
-        else "Scrivi SOLO in ITALIANO. Output SOLO righe che iniziano con NARRATOR: o EXPERT:."
-    )
-
     resp = await provider.chat(
         messages=[
-            {"role": "system", "content": sys_msg},
+            {"role": "system", "content": podcast_system(lang)},
             {"role": "user", "content": prompt},
         ],
         tools=None,

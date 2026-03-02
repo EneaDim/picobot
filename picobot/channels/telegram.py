@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import asyncio
 import hashlib
 import json
@@ -21,6 +22,7 @@ except Exception:  # pragma: no cover
     filters = None  # type: ignore
 
 from picobot.agent.orchestrator import Orchestrator
+from picobot.agent.prompts import detect_language
 from picobot.config.schema import Config
 from picobot.session.manager import SessionManager, sanitize_session_id
 from picobot.tools.retrieval import make_kb_ingest_pdf_tool
@@ -610,6 +612,19 @@ class TelegramChannel:
                 await msg.reply_text("⚠️ Errore trascrizione. Controlla il terminale.")
                 self._dbg(f"whisper rc={rc} err={err.strip()[:400]!r}")
                 return
+
+            detected_lang = None
+            if lang and lang.lower() != "auto":
+                detected_lang = lang.lower()
+            else:
+                # whisper.cpp often prints something like 'detected language: en'
+                m = re.search(
+                    r"(?:detected\s+language|language)\s*[:=]\s*([a-z]{2,3})",
+                    (err or "") + "\n" + (out or ""),
+                    re.IGNORECASE,
+                )
+                if m:
+                    detected_lang = m.group(1).lower()
         except Exception as e:
             await self._transient_set(status, "⚠️ whisper.cpp error.")
             await self._transient_clear(status)
@@ -626,7 +641,10 @@ class TelegramChannel:
                 transcript = (out or "").strip()
         except Exception:
             transcript = (out or "").strip()
-
+        
+        if transcript and not detected_lang:
+            detected_lang = detect_language(transcript, default=getattr(self.cfg, "default_language", "it"))
+        
         if not transcript:
             await self._transient_set(status, "⚠️ Empty transcript.")
             await self._transient_clear(status)
@@ -656,7 +674,7 @@ class TelegramChannel:
                 pass
 
         try:
-            res = await self.orch.one_turn(session, transcript, status=status_cb)
+            res = await self.orch.one_turn(session, transcript, status=status_cb, input_lang=detected_lang)
             await msg.reply_text(res.content or "(empty)")
             await self._transient_set(status, "✅ Done.")
         except Exception as e:
