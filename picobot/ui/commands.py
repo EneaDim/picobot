@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 import uuid
-from pathlib import Path
 
 
 @dataclass
@@ -73,7 +73,6 @@ def _clear_session_memory(session: Any) -> bool:
     if session is None:
         return False
 
-    # Primary: picobot.session.manager.Session has these Path properties
     try:
         history_file = getattr(session, "history_file", None)
         summary_file = getattr(session, "summary_file", None)
@@ -90,22 +89,18 @@ def _clear_session_memory(session: Any) -> bool:
             Path(state_file).write_text("{}", encoding="utf-8")
             ok = True
 
-        # Also clear selected keys if get_state/set_state exist (safe)
         gs = getattr(session, "get_state", None)
         ss = getattr(session, "set_state", None)
         if callable(gs) and callable(ss):
             st = gs() or {}
-            # clear common runtime keys without breaking other state
             for k in ("kb_name", "last_tool", "last_route", "session_summary"):
                 st.pop(k, None)
             ss(st)
 
-        if ok:
-            return True
+        return ok
     except Exception:
         pass
 
-    # Fallback: other possible session implementations (best-effort)
     for meth in ("clear_memory", "reset_memory", "forget_all", "memory_clear"):
         fn = getattr(session, meth, None)
         if callable(fn):
@@ -118,11 +113,28 @@ def _clear_session_memory(session: Any) -> bool:
     return False
 
 
+def _find_recent_podcasts(cfg, limit: int = 10) -> list[Path]:
+    pcfg = getattr(cfg, "podcast", None)
+    out_dir = Path(getattr(pcfg, "output_dir", "outputs/podcasts") if pcfg else "outputs/podcasts").expanduser()
+    if not out_dir.exists():
+        return []
+    cands: list[Path] = []
+    for p in out_dir.glob("*/podcast.*"):
+        if p.is_file():
+            cands.append(p)
+    for p in out_dir.glob("podcast.*"):
+        if p.is_file():
+            cands.append(p)
+    cands = sorted(set(cands), key=lambda x: x.stat().st_mtime, reverse=True)
+    return cands[: max(1, int(limit))]
+
+
 def handle_command(
     text: str,
     *,
     session: Any = None,
     session_manager: Any = None,
+    cfg: Any = None,
 ) -> CommandResult:
     """
     Shared command handler for CLI and Telegram.
@@ -152,15 +164,41 @@ def handle_command(
             "/new                     (create & switch to a fresh session)\n"
             "/memory                  (show memory help)\n"
             "/memory clear            (clear session memory)\n"
+            "/podcast list            (list recent podcasts)\n"
+            "/podcast play [path]     (show latest podcast path or given path)\n"
         )
         return CommandResult(handled=True, reply=reply)
 
     if cmd == "/ping":
         return CommandResult(handled=True, reply="Pong!")
 
+    if cmd == "/podcast":
+        if not args:
+            return CommandResult(handled=True, reply="Usage: /podcast list | /podcast play [path]")
+        if args[0] == "list":
+            if cfg is None:
+                return CommandResult(handled=True, reply="Config not available for listing podcasts.")
+            items = _find_recent_podcasts(cfg, limit=10)
+            if not items:
+                return CommandResult(handled=True, reply="(no podcasts found)")
+            return CommandResult(handled=True, reply="Recent podcasts:\n" + "\n".join(f"- {p}" for p in items))
+        if args[0] == "play":
+            # In shared handler we only return the path; CLI will actually play audio.
+            if len(args) >= 2:
+                ap = Path(" ".join(args[1:])).expanduser()
+                if not ap.exists():
+                    return CommandResult(handled=True, reply=f"❌ not found: {ap}")
+                return CommandResult(handled=True, reply=f"▶️ {ap}")
+            if cfg is None:
+                return CommandResult(handled=True, reply="Config not available for finding latest podcast.")
+            items = _find_recent_podcasts(cfg, limit=1)
+            if not items:
+                return CommandResult(handled=True, reply="(no podcasts found)")
+            return CommandResult(handled=True, reply=f"▶️ {items[0]}")
+        return CommandResult(handled=True, reply="Usage: /podcast list | /podcast play [path]")
+
     # Session commands
     if cmd == "/session":
-        # /session [list|set <id>]
         if not args:
             sid = _get_session_id(session)
             return CommandResult(handled=True, reply=sid)
@@ -196,7 +234,6 @@ def handle_command(
         return CommandResult(handled=True, reply=f"ok (session={sid})", new_session_id=sid)
 
     if cmd == "/new":
-        # Create a fresh session id and switch
         cur = _get_session_id(session)
         prefix = cur if cur and cur != "<unknown>" else "s"
         sid = _safe_new_session_id(prefix=prefix)
@@ -219,10 +256,7 @@ def handle_command(
             ok = _clear_session_memory(session)
             if ok:
                 return CommandResult(handled=True, reply="ok (session memory cleared)")
-            return CommandResult(
-                handled=True,
-                reply="Could not clear session memory (Session API mismatch).",
-            )
+            return CommandResult(handled=True, reply="Could not clear session memory (Session API mismatch).")
 
         return CommandResult(handled=True, reply="Usage: /memory clear")
 

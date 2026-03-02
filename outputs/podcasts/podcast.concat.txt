@@ -1,7 +1,0 @@
-file '/home/eneadim/github/picobot/outputs/podcasts/seg_001_expert.wav'
-file '/home/eneadim/github/picobot/outputs/podcasts/seg_002_narrator.wav'
-file '/home/eneadim/github/picobot/outputs/podcasts/seg_003_expert.wav'
-file '/home/eneadim/github/picobot/outputs/podcasts/seg_004_expert.wav'
-file '/home/eneadim/github/picobot/outputs/podcasts/seg_005_expert.wav'
-file '/home/eneadim/github/picobot/outputs/podcasts/seg_006_expert.wav'
-file '/home/eneadim/github/picobot/outputs/podcasts/seg_007_expert.wav'

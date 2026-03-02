@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import subprocess
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -69,6 +72,49 @@ def _help_text(use_emojis: bool) -> str:
     )
 
 
+
+def _find_recent_podcasts(cfg, limit: int = 10) -> list[Path]:
+    pcfg = getattr(cfg, "podcast", None)
+    out_dir = Path(getattr(pcfg, "output_dir", "outputs/podcasts") if pcfg else "outputs/podcasts").expanduser()
+    if not out_dir.exists():
+        return []
+    cands: list[Path] = []
+    # new layout: outputs/podcasts/<run>/podcast.*
+    for p in out_dir.glob("*/podcast.*"):
+        if p.is_file():
+            cands.append(p)
+    # fallback: old layout: outputs/podcasts/podcast.*
+    for p in out_dir.glob("podcast.*"):
+        if p.is_file():
+            cands.append(p)
+    cands = sorted(set(cands), key=lambda x: x.stat().st_mtime, reverse=True)
+    return cands[: max(1, int(limit))]
+
+
+def _play_audio(cfg, audio_path: Path) -> None:
+    tools = getattr(cfg, "tools", None)
+    ffmpeg_bin = str(getattr(tools, "ffmpeg_bin", "ffmpeg") or "ffmpeg").strip() or "ffmpeg"
+    aplay_bin = str(getattr(tools, "aplay_bin", "aplay") or "aplay").strip() or "aplay"
+
+    # Prefer ffplay if available (best for mp3/ogg)
+    ffplay = shutil.which("ffplay")
+    if ffplay:
+        subprocess.run([ffplay, "-nodisp", "-autoexit", str(audio_path)], check=False)
+        return
+
+    # Otherwise: decode to wav on stdout -> aplay
+    # aplay expects wav; ffmpeg handles mp3/ogg/wav
+    p1 = subprocess.Popen(
+        [ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-i", str(audio_path), "-f", "wav", "-"],
+        stdout=subprocess.PIPE,
+    )
+    try:
+        subprocess.run([aplay_bin, "-"], stdin=p1.stdout, check=False)
+    finally:
+        try:
+            p1.terminate()
+        except Exception:
+            pass
 def _run_coro(coro):
     """
     Run an async coroutine from sync CLI code, without nesting asyncio.run().
@@ -161,6 +207,40 @@ def chat(session: str = typer.Option("default", "--session", "-s")) -> None:
             console.print("Usage: /kb set <name>")
             continue
 
+
+        if user.startswith("/podcast"):
+            parts = user.split()
+            if len(parts) >= 2 and parts[1] == "list":
+                items = _find_recent_podcasts(cfg, limit=10)
+                if not items:
+                    console.print("(no podcasts found)")
+                    continue
+                console.print("Recent podcasts:")
+                for i, ap in enumerate(items, start=1):
+                    console.print(f"  {i}. {ap}")
+                continue
+
+            if len(parts) >= 2 and parts[1] == "play":
+                if len(parts) >= 3:
+                    ap = Path(" ".join(parts[2:])).expanduser()
+                    if not ap.exists():
+                        console.print(f"❌ not found: {ap}")
+                        continue
+                    console.print(f"▶️  Playing: {ap}")
+                    _play_audio(cfg, ap)
+                    continue
+
+                items = _find_recent_podcasts(cfg, limit=1)
+                if not items:
+                    console.print("(no podcasts found)")
+                    continue
+                ap = items[0]
+                console.print(f"▶️  Playing latest: {ap}")
+                _play_audio(cfg, ap)
+                continue
+
+            console.print("Usage: /podcast list | /podcast play [path]")
+            continue
         if user.startswith("/mem"):
             parts = user.split()
             if len(parts) >= 2 and parts[1] == "show":
@@ -182,7 +262,7 @@ def chat(session: str = typer.Option("default", "--session", "-s")) -> None:
             console.print("Usage: /mem show | /mem clear")
             continue
 
-        cr = handle_command(user, session=current, session_manager=sm)
+        cr = handle_command(user, session=current, session_manager=sm, cfg=cfg)
         if cr.handled:
             if cr.new_session_id:
                 current = sm.get(cr.new_session_id)

@@ -40,9 +40,17 @@ if _HAS_PT:
                 "/exit",
                 "/mem show",
                 "/mem clear",
+                "/memory",
+                "/memory clear",
+                "/session",
                 "/session list",
                 "/session set ",
+                "/sessions",
+                "/use ",
+                "/new",
                 "/kb set ",
+                "/podcast list",
+                "/podcast play ",
             ]
 
         def _kb_names(self) -> list[str]:
