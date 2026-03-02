@@ -543,10 +543,18 @@ class TelegramChannel:
         await self._transient_set(status, "🔎 Converting with ffmpeg…")
 
         ffmpeg = str(getattr(self.cfg.tools, "ffmpeg_bin", "ffmpeg") or "ffmpeg")
+        
+        lang = (getattr(self.cfg.tools, "whisper_language", "auto") or "auto").strip()
+
+        cmd = [str(whisper_main), "-m", str(model), "-f", str(wav_path)]
+        if lang:
+            cmd += ["-l", lang]          # <-- auto / it / en
+        cmd += ["-otxt", "-of", str(out_prefix)]
+
         try:
-            rc, _, err = await _run_subprocess(
-                [ffmpeg, "-y", "-i", str(in_path), "-ac", "1", "-ar", "16000", "-f", "wav", str(wav_path)],
-                timeout_s=60.0,
+            rc, out, err = await _run_subprocess(
+                cmd,
+                timeout_s=max(90.0, float(max_s) * 1.5 if max_s else 180.0),
             )
             if rc != 0:
                 await self._transient_set(status, "⚠️ ffmpeg failed.")

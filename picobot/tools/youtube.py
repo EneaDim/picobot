@@ -77,7 +77,7 @@ def make_yt_transcript_tool(ytdlp_bin: str, ytdlp_args: list[str] | None = None)
         extra_args = list(ytdlp_args or [])
 
         # Default to EN only to avoid unnecessary requests / 429s
-        langs = (args.lang or "en.*,en-orig.*").strip()
+        langs = (args.lang or "it.*,it-orig.*,en.*,en-orig.*").strip()
 
         def run_ytdlp(sub_flag: str):
             cmd = [
@@ -118,13 +118,30 @@ def make_yt_transcript_tool(ytdlp_bin: str, ytdlp_args: list[str] | None = None)
                 raise RuntimeError(msg)
 
             # Prefer plain 'en' over 'en-orig' when both exist
+            prefer_it = (langs.lower().startswith("it") or ".it" in langs.lower())
+            
             def score(p: Path) -> tuple:
                 n = p.name.lower()
-                if ".en.vtt" in n and "orig" not in n:
-                    return (0, n)
-                if "en-orig" in n:
-                    return (1, n)
-                return (2, n)
+                if prefer_it:
+                    if ".it.vtt" in n and "orig" not in n:
+                        return (0, n)
+                    if "it-orig" in n:
+                        return (1, n)
+                    if ".en.vtt" in n and "orig" not in n:
+                        return (2, n)
+                    if "en-orig" in n:
+                        return (3, n)
+                    return (4, n)
+                else:
+                    if ".en.vtt" in n and "orig" not in n:
+                        return (0, n)
+                    if "en-orig" in n:
+                        return (1, n)
+                    if ".it.vtt" in n and "orig" not in n:
+                        return (2, n)
+                    if "it-orig" in n:
+                        return (3, n)
+                    return (4, n)            
 
             vtts.sort(key=score)
             vtt_text = vtts[0].read_text(encoding="utf-8", errors="ignore")

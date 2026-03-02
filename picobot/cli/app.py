@@ -161,7 +161,7 @@ def chat(session: str = typer.Option("default", "--session", "-s")):
                 if cr.new_session_id and 'sm' in locals():
                     current = sm.get(cr.new_session_id)
                 print(cr.reply)
-                continue
+                return
 
             res = await orch.one_turn(current, user, status=status_cb)
             st.clear()
