@@ -137,35 +137,53 @@ class PromptPack:
             return f"Riassumi in punti elenco. Max {mc} caratteri.\nNiente premesse.\n\nTesto:\n{text}"
         return f"Summarize in bullet points. Max {mc} characters.\nNo preface.\n\nText:\n{text}"
 
-    def podcast_writer(self, topic: str, target_words: int, hard_cap_words: int = 300) -> str:
-        tw = max(90, int(target_words))
-        cap = max(120, int(hard_cap_words))
+    def podcast_writer(
+        self,
+        topic: str,
+        target_words: int,
+        hard_cap_words: int = 320,
+        audience: str = "general",
+        style: str = "warm, curious, practical",
+    ) -> str:
+        tw = max(120, int(target_words))
+        cap = max(160, int(hard_cap_words))
 
         if self.lang == "it":
             return (
-                "Scrivi un dialogo REALISTICO per un podcast. SOLO dialogo.\n"
+                "Scrivi un dialogo per un podcast. SOLO dialogo.\n"
+                f"Pubblico: {audience}. Stile: {style}.\n"
                 f"Target ~{tw} parole. HARD CAP {cap} parole.\n"
                 "Output: SOLO righe che iniziano con NARRATOR: o EXPERT:.\n"
-                "INIZIA SUBITO col dialogo: nessuna introduzione/meta (vietato: 'Ecco...', 'Ecco il dialogo', 'Oggi abbiamo').\n"
-                "Niente liste, niente markdown, niente parentesi quadre.\n"
-                "Stile: conversazione naturale. Se ci sono nomi/fatti dubbi, l'EXPERT lo dice e resta prudente.\n"
-                "Vincoli: 8-14 battute, ogni battuta 1-2 frasi, alterna spesso.\n"
-                "Divieti: placeholder, '...'.\n"
+                "La PRIMA riga deve iniziare con NARRATOR:.\n"
+                "Niente meta (vietato: 'Ecco...', 'Oggi parliamo di...'). Niente markdown.\n"
+                "VOCI (devono sentirsi diverse):\n"
+                "- NARRATOR: caldo, curioso; frasi brevi; domande concrete; 1 micro-riassunto a metà.\n"
+                "- EXPERT: calmo e preciso; esempi; evita gergo; se non è sicuro lo dice.\n"
+                "STRUTTURA:\n"
+                "- 10-16 battute; alternanza quasi sempre.\n"
+                "- Ogni battuta 1-2 frasi.\n"
+                "- 1 esempio reale + 1 errore comune + 1 consiglio pratico finale.\n"
+                "DIVIETI: placeholder, '...', liste, parentesi quadre.\n"
                 f"Tema: {topic}"
             )
 
         return (
-            "Write a REALISTIC podcast dialogue. Dialogue ONLY.\n"
+            "Write a podcast dialogue. Dialogue ONLY.\n"
+            f"Audience: {audience}. Style: {style}.\n"
             f"Target ~{tw} words. HARD CAP {cap} words.\n"
             "Output: ONLY lines starting with NARRATOR: or EXPERT:.\n"
-            "START IMMEDIATELY with dialogue: no meta/preface (forbidden: 'Here is...', 'Today we have').\n"
-            "No lists, no markdown, no bracket tags.\n"
-            "Style: natural conversation. If facts/names are doubtful, the EXPERT must say so and be cautious.\n"
-            "Constraints: 8-14 turns, 1-2 sentences per turn, alternate often.\n"
-            "Avoid: placeholders, '...'.\n"
+            "FIRST line must start with NARRATOR:.\n"
+            "No meta/preface (forbidden: 'Here is...', 'Today we talk about...'). No markdown.\n"
+            "VOICES (must sound different):\n"
+            "- NARRATOR: warm, curious; short sentences; concrete questions; 1 tiny mid-way recap.\n"
+            "- EXPERT: calm and precise; examples; avoids jargon; says when uncertain.\n"
+            "STRUCTURE:\n"
+            "- 10-16 turns; mostly alternating.\n"
+            "- 1-2 sentences per turn.\n"
+            "- Include: 1 real-world example + 1 common mistake + 1 practical final tip.\n"
+            "AVOID: placeholders, '...', lists, bracket tags.\n"
             f"Topic: {topic}"
         )
-
 
 def system_base_context(lang: str) -> str:
     if lang == "it":

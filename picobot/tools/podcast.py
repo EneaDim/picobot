@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from picobot.agent.prompts import PromptPack, podcast_system, detect_language
+from picobot.agent.prompts import PromptPack, detect_language, podcast_system
+
+StatusCb = Callable[[str], Awaitable[None]]
 
 
 def _pod_dbg(cfg, msg: str) -> None:
@@ -22,9 +24,6 @@ def _pod_dbg(cfg, msg: str) -> None:
             print(f"[podcast] {msg}", file=sys.stderr)
     except Exception:
         pass
-
-
-StatusCb = Callable[[str], Awaitable[None]]
 
 
 def detect_podcast_request(text: str, cfg) -> tuple[str, str] | None:
@@ -43,7 +42,6 @@ def detect_podcast_request(text: str, cfg) -> tuple[str, str] | None:
     if not triggers:
         return None
 
-    trig_list: list[str] = []
     try:
         trig_list = list(getattr(triggers, lang))
     except Exception:
@@ -70,17 +68,38 @@ def _resolve_piper_model(cfg, lang: str, voice_id: str) -> str:
     if not tools:
         return ""
 
-    voices_dir = getattr(tools, "piper_voices_dir", "") or ""
+    voices_dir = str(getattr(tools, "piper_voices_dir", "") or "").strip()
     if voices_dir and voice_id:
         cand = Path(voices_dir).expanduser() / f"{voice_id}.onnx"
         if cand.exists():
             return str(cand)
-        # STRICT: no silent fallback if a voice_id was requested
+        # STRICT: if a voice_id is explicitly requested, do not silently swap to another voice
         return ""
 
-    if lang == "it":
+    # If no voice_id was set, fall back to a language-default model path
+    if (lang or "").lower().startswith("it"):
         return str(getattr(tools, "piper_model_it", "") or "")
     return str(getattr(tools, "piper_model_en", "") or "")
+
+
+def _get_voice_ids(cfg, lang: str) -> tuple[str, str]:
+    """Return (narrator_id, expert_id). Empty strings mean 'not configured'."""
+    pcfg = getattr(cfg, "podcast", None)
+    voices = getattr(pcfg, "voices", None) if pcfg else None
+
+    narrator_id = ""
+    expert_id = ""
+    try:
+        v = getattr(voices, lang)
+        narrator_id = str(getattr(getattr(v, "narrator", None), "voice_id", "") or "")
+        expert_id = str(getattr(getattr(v, "expert", None), "voice_id", "") or "")
+    except Exception:
+        narrator_id = ""
+        expert_id = ""
+
+    narrator_id = narrator_id.strip()
+    expert_id = expert_id.strip()
+    return narrator_id, expert_id
 
 
 async def _run(cmd: list[str], timeout_s: float) -> tuple[int, str, str]:
@@ -104,10 +123,11 @@ async def _run(cmd: list[str], timeout_s: float) -> tuple[int, str, str]:
 
 async def _synthesize_piper(cfg, text: str, lang: str, voice_id: str, out_wav: Path) -> None:
     tools = getattr(cfg, "tools", None)
-    piper_bin = str(getattr(tools, "piper_bin", "") or "piper")
+    piper_bin = str(getattr(tools, "piper_bin", "") or "piper").strip() or "piper"
+
     model_path = _resolve_piper_model(cfg, lang, voice_id)
     if not model_path:
-        raise RuntimeError(f"missing piper model for voice_id={voice_id!r}")
+        raise RuntimeError(f"missing piper model for voice_id={voice_id!r} lang={lang!r}")
 
     out_wav.parent.mkdir(parents=True, exist_ok=True)
 
@@ -130,6 +150,7 @@ async def _synthesize_piper(cfg, text: str, lang: str, voice_id: str, out_wav: P
         stderr=asyncio.subprocess.PIPE,
         env=env,
     )
+
     timeout_s = float(getattr(getattr(cfg, "ollama", None), "timeout_s", 120.0) or 120.0)
     try:
         _out_b, err_b = await asyncio.wait_for(proc.communicate(input=(text or "").encode("utf-8")), timeout=timeout_s)
@@ -149,8 +170,8 @@ async def _synthesize_piper(cfg, text: str, lang: str, voice_id: str, out_wav: P
 
 async def _synthesize_qwen_tts(cfg, text: str, voice_id: str, out_wav: Path) -> None:
     tools = getattr(cfg, "tools", None)
-    qbin = str(getattr(tools, "qwen_tts_bin", "") or "")
-    model_dir = str(getattr(tools, "qwen_tts_model_dir", "") or "")
+    qbin = str(getattr(tools, "qwen_tts_bin", "") or "").strip()
+    model_dir = str(getattr(tools, "qwen_tts_model_dir", "") or "").strip()
     if not qbin or not model_dir:
         raise RuntimeError("qwen_tts_bin/qwen_tts_model_dir not configured")
 
@@ -282,7 +303,7 @@ def _split_for_tts(text: str, max_chars: int = 320) -> list[str]:
         return []
     max_chars = max(120, int(max_chars))
 
-    parts = re.split(r"(?<=[\.!\?])\s+", t)
+    parts = re.split(r"(?<=[\.\!\?])\s+", t)
     out: list[str] = []
     buf = ""
     for p in parts:
@@ -310,12 +331,11 @@ def _split_for_tts(text: str, max_chars: int = 320) -> list[str]:
     return [x for x in final if x]
 
 
-
 def _concat_wavs(wavs: list[Path], out_wav: Path, ffmpeg_bin: str) -> None:
     if not wavs:
         raise RuntimeError("no wav segments")
 
-    # Try direct concat (fast) only if all params match
+    # Try direct concat only if all params match
     params = None
     frames: list[bytes] = []
     try:
@@ -337,7 +357,6 @@ def _concat_wavs(wavs: list[Path], out_wav: Path, ffmpeg_bin: str) -> None:
 
         out_wav.parent.mkdir(parents=True, exist_ok=True)
         with wave.open(str(out_wav), "wb") as wout:
-            # set explicit fields (robust across wave implementations)
             wout.setnchannels(params.nchannels)
             wout.setsampwidth(params.sampwidth)
             wout.setframerate(params.framerate)
@@ -347,15 +366,14 @@ def _concat_wavs(wavs: list[Path], out_wav: Path, ffmpeg_bin: str) -> None:
     except Exception:
         pass
 
-    # Fallback: normalize+concat via ffmpeg (stable output)
+    # Fallback: normalize+concat via ffmpeg
     ff = (ffmpeg_bin or "ffmpeg").strip() or "ffmpeg"
     out_wav.parent.mkdir(parents=True, exist_ok=True)
 
     lst = out_wav.with_suffix(".concat.txt")
     abs_lines = []
     for seg in wavs:
-        ap = str(seg.resolve())
-        ap = ap.replace("'", "'\\''")
+        ap = str(seg.resolve()).replace("'", "'\\''")
         abs_lines.append(f"file '{ap}'")
     lst.write_text("\n".join(abs_lines) + "\n", encoding="utf-8")
 
@@ -391,13 +409,22 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
     minutes = max(1, min(default_minutes, max_minutes))
     hard_cap_words = int(max_minutes * target_wpm)
     target_words = int(minutes * target_wpm)
-    target_words = max(60, min(target_words, hard_cap_words))
+    target_words = max(80, min(target_words, hard_cap_words))
+
+    audience = str(getattr(pcfg, "audience", "general") or "general")
+    style = str(getattr(pcfg, "style", "warm, curious, practical") or "warm, curious, practical")
 
     if status:
         await status("🎙 Writing script…")
 
     pp = PromptPack(lang=lang)
-    prompt = pp.podcast_writer(topic=topic, target_words=target_words, hard_cap_words=hard_cap_words)
+    prompt = pp.podcast_writer(
+        topic=topic,
+        target_words=target_words,
+        hard_cap_words=hard_cap_words,
+        audience=audience,
+        style=style,
+    )
 
     resp = await provider.chat(
         messages=[
@@ -405,7 +432,7 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
             {"role": "user", "content": prompt},
         ],
         tools=None,
-        max_tokens=800,
+        max_tokens=900,
         temperature=0.0,
     )
 
@@ -415,7 +442,7 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
 
     parts = _merge_same_speaker(_parse_dialogue(script))
     parts = _merge_same_speaker(_enforce_word_cap(parts, hard_cap_words))
-    _pod_dbg(cfg, f"parsed parts={len(parts)} speakers={[sp for sp,_ in parts]}")
+    _pod_dbg(cfg, f"parsed parts={len(parts)} speakers={[sp for sp, _ in parts]}")
     if not parts:
         raise RuntimeError("bad script format")
 
@@ -425,46 +452,52 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
     out_dir = Path(getattr(pcfg, "output_dir", "outputs/podcasts") or "outputs/podcasts").expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    voices = getattr(pcfg, "voices", None)
-    narrator_id = ""
-    expert_id = ""
-    try:
-        narrator_id = str(getattr(getattr(getattr(voices, lang), "narrator"), "voice_id"))
-        expert_id = str(getattr(getattr(getattr(voices, lang), "expert"), "voice_id"))
-    except Exception:
-        narrator_id = ""
-        expert_id = ""
+    narrator_id, expert_id = _get_voice_ids(cfg, lang)
+    tts_backend = str(getattr(pcfg, "tts_backend", "piper") or "piper").strip().lower()
 
-    tts_backend = str(getattr(pcfg, "tts_backend", "piper") or "piper")
-
-    if tts_backend != "qwen_tts":
+    if tts_backend == "qwen_tts":
+        if not narrator_id or not expert_id:
+            raise RuntimeError("qwen_tts requires narrator/expert voice_id in config")
+        if narrator_id == expert_id:
+            _pod_dbg(cfg, "WARNING: narrator/expert voice_id are identical (same voice).")
+    else:
+        # Piper: require explicit voice ids OR accept language defaults if you configured piper_model_{it,en}
         nm = _resolve_piper_model(cfg, lang, narrator_id)
         em = _resolve_piper_model(cfg, lang, expert_id)
-        if not narrator_id or not nm:
+        if narrator_id and not nm:
             _pod_dbg(cfg, f"Missing narrator voice model for voice_id={narrator_id!r}")
             raise RuntimeError("missing narrator voice model")
-        if not expert_id or not em:
+        if expert_id and not em:
             _pod_dbg(cfg, f"Missing expert voice model for voice_id={expert_id!r}")
             raise RuntimeError("missing expert voice model")
-        if narrator_id == expert_id:
+
+        # If voice ids are not configured, we will synthesize both with language-default model.
+        if not narrator_id:
+            narrator_id = ""
+        if not expert_id:
+            expert_id = ""
+
+        if narrator_id and expert_id and narrator_id == expert_id:
             _pod_dbg(cfg, "WARNING: narrator/expert voice_id are identical (same voice).")
 
     seg_paths: list[Path] = []
     seg_i = 0
     for spk, txt in parts:
         voice_id = narrator_id if spk == "NARRATOR" else expert_id
+        _pod_dbg(cfg, f"voice {spk} voice_id={voice_id!r}")
 
-        _pod_dbg(cfg, f"voice {spk} voice_id={voice_id}")
         subchunks = _split_for_tts(txt, max_chars=320)
         _pod_dbg(cfg, f"{spk} chunks={len(subchunks)}")
 
         for chunk in subchunks:
             seg_i += 1
             wav_path = out_dir / f"seg_{seg_i:03d}_{spk.lower()}.wav"
+
             if tts_backend == "qwen_tts":
                 await _synthesize_qwen_tts(cfg, chunk, voice_id=voice_id, out_wav=wav_path)
             else:
                 await _synthesize_piper(cfg, chunk, lang=lang, voice_id=voice_id, out_wav=wav_path)
+
             seg_paths.append(wav_path)
 
     tools = getattr(cfg, "tools", None)
