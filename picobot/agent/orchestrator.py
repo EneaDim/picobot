@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import traceback
+
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,6 +10,7 @@ from typing import Awaitable, Callable
 
 from picobot.agent.router import deterministic_route, RouteDecision
 from picobot.agent.memory import make_memory_manager
+from picobot.agent.prompts import PromptPack, detect_language, system_base_context
 from picobot.retrieval.store import KBStore
 from picobot.config.schema import Config
 from picobot.providers.ollama import OllamaProvider, OllamaTimeout, OllamaProviderError
@@ -14,6 +18,7 @@ from picobot.providers.ollama import OllamaProvider, OllamaTimeout, OllamaProvid
 from picobot.tools.registry import ToolRegistry
 from picobot.tools.youtube import make_yt_transcript_tool, make_yt_summary_tool
 from picobot.tools.retrieval import make_kb_ingest_pdf_tool
+from picobot.tools.podcast import detect_podcast_request, generate_podcast
 
 
 StatusCb = Callable[[str], Awaitable[None]]
@@ -26,6 +31,8 @@ class TurnResult:
     kb_mode: str
     reason: str
     retrieval_hits: int = 0
+    audio_path: str | None = None
+    script: str | None = None
 
 
 _REMEMBER_PATTERNS = [
@@ -103,11 +110,12 @@ class Orchestrator:
 
             resp = await self.provider.chat(
                 messages=[
-                    {"role": "system", "content": "You are a concise technical summarizer."},
+                    {"role": "system", "content": "You are a concise summarizer."},
                     {"role": "user", "content": f"URL: {url}\n\nTRANSCRIPT:\n{transcript}\n\n{prompt}"},
                 ],
                 tools=None,
-                max_tokens=700,
+                max_tokens=650,
+                temperature=0.0,
             )
             return (resp.content or "").strip()
 
@@ -148,6 +156,31 @@ class Orchestrator:
             mm.append_turn("assistant", content)
             return TurnResult(content=content, action="chat", kb_mode="keep", reason="remember")
 
+        # podcast trigger (config-driven)
+        pc = detect_podcast_request(user_text, self.cfg)
+        if pc:
+            topic, lang = pc
+            if status:
+                await status("🎙 Podcast…")
+            try:
+                pr = await generate_podcast(self.cfg, self.provider, topic=topic, lang=lang, status=status)
+            except Exception as e:
+                # terminal-only details
+                try:
+                    print(f"[podcast] ERROR: {e!r}", file=sys.stderr)
+                    traceback.print_exc()
+                except Exception:
+                    pass
+                content = ("⚠️ Errore podcast. Controlla il terminale." if lang == "it" else "⚠️ Podcast error. Check terminal.")
+                mm.append_turn("assistant", content)
+                return TurnResult(content=content, action="podcast", kb_mode="keep", reason="podcast error")
+
+            content = "✅ Podcast pronto." if lang == "it" else "✅ Podcast ready."
+            if getattr(getattr(self.cfg, "podcast", None), "send_script_text", False):
+                content += "\n\n" + (pr.script or "")
+            mm.append_turn("assistant", content)
+            return TurnResult(content=content, action="podcast", kb_mode="keep", reason="podcast", audio_path=pr.audio_path, script=pr.script)
+
         # routing
         decision: RouteDecision = deterministic_route(user_text, session.state_file)
         mm.append_turn("user", user_text)
@@ -165,15 +198,13 @@ class Orchestrator:
             return TurnResult(content=content, action="chat", kb_mode="keep", reason=f"memory match ({score:.2f})")
 
         # prompt context
+        lang = detect_language(user_text, default=getattr(self.cfg, "default_language", "it"))
+
         mem = mm.read_memory().strip()
         summ = mm.read_summary().strip()
         tail = mm.read_history_tail(self.cfg.memory_limits.tail_lines).strip()
 
-        base_context = (
-            "You are picobot (a small nanobot-style assistant).\n"
-            "SESSION MEMORY is authoritative and must be used for continuity.\n"
-            "Do not invent memories.\n"
-        )
+        base_context = system_base_context(lang) + "\n"
         memory_context = ""
         if mem and mem != "# Memory":
             memory_context += f"\nSESSION MEMORY:\n{mem}\n"
@@ -285,7 +316,7 @@ class Orchestrator:
                         )},
                     ],
                     tools=None,
-                    max_tokens=650,
+                    max_tokens=650, temperature=0.0,
                 )
             except OllamaTimeout:
                 content = "⏱️ Local model timed out. Increase ollama.timeout_s."
@@ -316,10 +347,11 @@ class Orchestrator:
             resp = await self.provider.chat(
                 messages=[
                     {"role": "system", "content": base_context + memory_context},
-                    {"role": "user", "content": user_text},
+                    {"role": "user", "content": PromptPack(lang=lang).orchestrator(user_text)},
                 ],
                 tools=None,
-                max_tokens=700,
+                max_tokens=650,
+                temperature=0.0,
             )
         except OllamaTimeout:
             content = "⏱️ Local model timed out. Increase ollama.timeout_s."

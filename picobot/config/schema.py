@@ -67,6 +67,15 @@ class ToolsConfig(BaseModel):
     piper_model_it: str = ""
     piper_model_en: str = ""
 
+    # piper voices (optional, for multiple voice_ids)
+    piper_voices_dir: str = ""
+    piper_voices_official: str = ""
+    piper_voices_hf: str = ""
+
+    # qwen tts (optional)
+    qwen_tts_bin: str = ""
+    qwen_tts_model_dir: str = ""
+
     # optional explicit paths used by adapters/tools
     whisper_cpp_main_path: str = "./whisper.cpp/main"
 
@@ -90,6 +99,40 @@ class WebConfig(BaseModel):
     enabled: bool = False
     allowlist: list[str] = Field(default_factory=list)
     timeout_s: float = 8.0
+
+class PodcastTriggers(BaseModel):
+    it: list[str] = Field(default_factory=lambda: ["voglio un podcast su", "fammi un podcast su"])
+    en: list[str] = Field(default_factory=lambda: ["i want a podcast about", "make a podcast about"])
+
+
+class PodcastVoice(BaseModel):
+    voice_id: str = ""
+
+
+class PodcastVoicesLang(BaseModel):
+    narrator: PodcastVoice = Field(default_factory=PodcastVoice)
+    expert: PodcastVoice = Field(default_factory=PodcastVoice)
+
+
+class PodcastVoices(BaseModel):
+    it: PodcastVoicesLang = Field(default_factory=PodcastVoicesLang)
+    en: PodcastVoicesLang = Field(default_factory=PodcastVoicesLang)
+
+
+class PodcastConfig(BaseModel):
+    enabled: bool = False
+    tts_backend: str = "piper"
+    audio_format: str = "mp3"
+
+    default_minutes: int = 1
+    max_minutes: int = 2
+    target_words_per_minute: int = 150
+
+    send_script_text: bool = False
+    output_dir: str = "outputs/podcasts"
+
+    triggers: PodcastTriggers = Field(default_factory=PodcastTriggers)
+    voices: PodcastVoices = Field(default_factory=PodcastVoices)
 
 
 class DebugConfig(BaseModel):
@@ -121,6 +164,7 @@ class Config(BaseModel):
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    podcast: PodcastConfig = Field(default_factory=PodcastConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     web: WebConfig = Field(default_factory=WebConfig)

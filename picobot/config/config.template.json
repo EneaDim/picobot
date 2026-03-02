@@ -32,9 +32,18 @@
     "ffmpeg_bin": ".picobot/tools/ffmpeg/bin/ffmpeg",
     "arecord_bin": ".picobot/tools/arecord/bin/arecord",
     "aplay_bin": ".picobot/tools/aplay/bin/aplay",
+
     "piper_bin": ".picobot/tools/piper/bin/piper",
     "piper_model_it": ".picobot/tools/piper/models/it_IT-paola-medium.onnx",
     "piper_model_en": ".picobot/tools/piper/models/en_US-lessac-medium.onnx",
+
+    "piper_voices_dir": ".picobot/tools/piper/models",
+    "piper_voices_official": "",
+    "piper_voices_hf": "",
+
+    "qwen_tts_bin": "",
+    "qwen_tts_model_dir": "",
+
     "ytdlp_args": [
       "--js-runtimes",
       "node:/usr/bin/node"
@@ -59,24 +68,23 @@
     "enabled": true,
     "tts_backend": "piper",
     "audio_format": "mp3",
-    "send_script_text": false,
-    "send_transcript_flag": false,
-    "max_minutes": 8,
+    "default_minutes": 1,
+    "max_minutes": 2,
     "target_words_per_minute": 150,
-  
+    "send_script_text": false,
+    "output_dir": "outputs/podcasts",
     "triggers": {
       "it": ["voglio un podcast su", "fammi un podcast su"],
       "en": ["i want a podcast about", "make a podcast about"]
     },
-  
     "voices": {
       "it": {
         "narrator": { "voice_id": "it_IT-paola-medium" },
-        "expert":   { "voice_id": "it_IT-aurora-medium" }
+        "expert": { "voice_id": "it_IT-aurora-medium" }
       },
       "en": {
         "narrator": { "voice_id": "en_US-amy-medium" },
-        "expert":   { "voice_id": "en_US-ryan-high" }
+        "expert": { "voice_id": "en_US-ryan-high" }
       }
     }
   },

@@ -148,6 +148,7 @@ def chat(session: str = typer.Option("default", "--session", "-s")):
             continue
 
         async def _run():
+            nonlocal current
             async def status_cb(msg: str) -> None:
                 if not cfg.ui.use_emojis:
                     msg = _strip_emojis(msg)

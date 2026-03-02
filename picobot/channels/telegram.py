@@ -352,7 +352,18 @@ class TelegramChannel:
 
         try:
             res = await self.orch.one_turn(session, user_text, status=status_cb)
-            await msg.reply_text(res.content or "(empty)")
+            # podcast: send audio attachment if present
+            ap = getattr(res, 'audio_path', None)
+            if ap:
+                try:
+                    from pathlib import Path as _P
+                    fp = _P(str(ap)).expanduser()
+                    if fp.exists():
+                        with fp.open('rb') as f:
+                            await msg.reply_audio(audio=f)
+                except Exception:
+                    pass
+            await msg.reply_text(res.content or '(empty)')
         except Exception as e:
             self._dbg(f"TEXT error: {e!r}")
             await msg.reply_text(f"⚠️ Error: {e}")
@@ -543,30 +554,24 @@ class TelegramChannel:
         await self._transient_set(status, "🔎 Converting with ffmpeg…")
 
         ffmpeg = str(getattr(self.cfg.tools, "ffmpeg_bin", "ffmpeg") or "ffmpeg")
-        
-        lang = (getattr(self.cfg.tools, "whisper_language", "auto") or "auto").strip()
-
-        cmd = [str(whisper_main), "-m", str(model), "-f", str(wav_path)]
-        if lang:
-            cmd += ["-l", lang]          # <-- auto / it / en
-        cmd += ["-otxt", "-of", str(out_prefix)]
+        cmd = [ffmpeg, "-y", "-i", str(in_path), "-ar", "16000", "-ac", "1", str(wav_path)]
 
         try:
             rc, out, err = await _run_subprocess(
                 cmd,
-                timeout_s=max(90.0, float(max_s) * 1.5 if max_s else 180.0),
+                timeout_s=max(60.0, float(max_s) * 1.0 if max_s else 120.0),
             )
             if rc != 0:
                 await self._transient_set(status, "⚠️ ffmpeg failed.")
                 await self._transient_clear(status)
-                await msg.reply_text(f"⚠️ ffmpeg failed: {err.strip()[:400]}")
-                self._dbg(f"ffmpeg rc={rc} err={err.strip()[:400]!r}")
+                self._dbg(f"ffmpeg rc={rc} err={err.strip()[:1200]!r}")
+                await msg.reply_text("⚠️ Errore conversione audio. Controlla il terminale.")
                 return
         except Exception as e:
             await self._transient_set(status, "⚠️ ffmpeg error.")
             await self._transient_clear(status)
-            await msg.reply_text(f"⚠️ ffmpeg error: {e}")
             self._dbg(f"ffmpeg exception: {e!r}")
+            await msg.reply_text("⚠️ Errore conversione audio. Controlla il terminale.")
             return
 
         await self._transient_set(status, "💭 Transcribing with whisper.cpp…")
@@ -588,14 +593,21 @@ class TelegramChannel:
             return
 
         try:
+            lang = (getattr(self.cfg.tools, "whisper_language", "auto") or "auto").strip()
+
+            cmd = [str(whisper_main), "-m", str(model), "-f", str(wav_path)]
+            if lang and lang.lower() != "auto":
+                cmd += ["-l", lang]
+            cmd += ["-otxt", "-of", str(out_prefix)]
+
             rc, out, err = await _run_subprocess(
-                [str(whisper_main), "-m", str(model), "-f", str(wav_path), "-otxt", "-of", str(out_prefix)],
+                cmd,
                 timeout_s=max(90.0, float(max_s) * 1.5 if max_s else 180.0),
             )
             if rc != 0:
                 await self._transient_set(status, "⚠️ whisper.cpp failed.")
                 await self._transient_clear(status)
-                await msg.reply_text(f"⚠️ whisper.cpp failed: {err.strip()[:400]}")
+                await msg.reply_text("⚠️ Errore trascrizione. Controlla il terminale.")
                 self._dbg(f"whisper rc={rc} err={err.strip()[:400]!r}")
                 return
         except Exception as e:
