@@ -1,34 +1,45 @@
 from __future__ import annotations
 
-from picobot.ui.commands import handle_command
 import asyncio
 import json
 
 import typer
-from picobot.config.init import init_project
 from rich.console import Console
 
+from picobot.agent.orchestrator import Orchestrator
+from picobot.agent.prompts import detect_language
+from picobot.channels.telegram import TelegramChannel
+from picobot.config.init import init_project
 from picobot.config.loader import load_config
 from picobot.providers.ollama import OllamaProvider
 from picobot.session.manager import SessionManager
-from picobot.utils.helpers import workspace_path
-from picobot.agent.orchestrator import Orchestrator
-from picobot.channels.telegram import TelegramChannel
+from picobot.ui.commands import handle_command
+from picobot.ui.console import ConsoleOptions, make_readline
 from picobot.ui.status import Status
-from picobot.ui.console import make_readline, ConsoleOptions
+from picobot.utils.helpers import workspace_path
 
 app = typer.Typer(add_completion=False)
 console = Console()
 
 
 def _strip_emojis(msg: str) -> str:
-    return msg.replace("🧭 ", "").replace("🔎 ", "").replace("💭 ", "").replace("✅ ", "").replace("🛠 ", "")
+    return (
+        msg.replace("🧭 ", "")
+        .replace("🔎 ", "")
+        .replace("💭 ", "")
+        .replace("✅ ", "")
+        .replace("🛠 ", "")
+        .replace("🎙 ", "")
+        .replace("🗣 ", "")
+        .replace("📨 ", "")
+    )
 
 
 def _print_banner() -> None:
     console.print("🤖 picobot")
     console.print("  🔎 Retrieval (local KB)")
     console.print("  🛠 Tools (YouTube transcript/summary, PDF ingest)")
+    console.print("  🎙 Podcast generator (trigger-based)")
     console.print("  📝 Memory (global MEMORY + session history/summary)")
     console.print("  ⌨️  Tab completion + history (type /help)")
     console.print("")
@@ -58,8 +69,7 @@ def _help_text(use_emojis: bool) -> str:
     )
 
 
-@app.command()
-def chat(session: str = typer.Option("default", "--session", "-s")):
+async def _chat_loop(session_id: str) -> None:
     cfg = load_config()
     ws = workspace_path(cfg)
     sm = SessionManager(ws)
@@ -67,7 +77,7 @@ def chat(session: str = typer.Option("default", "--session", "-s")):
     provider = OllamaProvider(cfg.ollama.base_url, cfg.ollama.model, timeout_s=cfg.ollama.timeout_s)
     orch = Orchestrator(cfg, provider, ws)
 
-    current = sm.get(session)
+    current = sm.get(session_id)
 
     _print_banner()
 
@@ -78,6 +88,12 @@ def chat(session: str = typer.Option("default", "--session", "-s")):
     global_memory.parent.mkdir(parents=True, exist_ok=True)
     if not global_memory.exists():
         global_memory.write_text("# Memory\n\n", encoding="utf-8")
+
+    async def status_cb(msg: str) -> None:
+        if not cfg.ui.use_emojis:
+            msg = _strip_emojis(msg)
+        with st.show(msg):
+            await asyncio.sleep(0)
 
     while True:
         try:
@@ -99,6 +115,7 @@ def chat(session: str = typer.Option("default", "--session", "-s")):
             console.print(_help_text(cfg.ui.use_emojis))
             continue
 
+        # Local CLI-only commands (session/kb/mem)
         if user.startswith("/session"):
             parts = user.split()
             if len(parts) >= 2 and parts[1] == "list":
@@ -147,37 +164,34 @@ def chat(session: str = typer.Option("default", "--session", "-s")):
             console.print("Usage: /mem show | /mem clear")
             continue
 
-        async def _run():
-            nonlocal current
-            async def status_cb(msg: str) -> None:
-                if not cfg.ui.use_emojis:
-                    msg = _strip_emojis(msg)
-                with st.show(msg):
-                    await asyncio.sleep(0)
+        # Shared UI commands (if any) — keep, but do NOT let it bypass orchestrator for normal chat.
+        cr = handle_command(user, session=current, session_manager=sm)
+        if cr.handled:
+            if cr.new_session_id:
+                current = sm.get(cr.new_session_id)
+            console.print(cr.reply)
+            continue
 
-            # Shared command handling (/help, /sessions, /use, ...)
-            cr = handle_command(user, session=current, session_manager=sm if 'sm' in locals() else None)
-            if cr.handled:
-                # If command switches session, update local session variable
-                if cr.new_session_id and 'sm' in locals():
-                    current = sm.get(cr.new_session_id)
-                print(cr.reply)
-                return
+        # 🔥 Dynamic language for CLI text input (enables consistent tools/podcast/ingest behavior)
+        input_lang = detect_language(user, default=getattr(cfg, "default_language", "it"))
 
-            res = await orch.one_turn(current, user, status=status_cb)
-            st.clear()
+        res = await orch.one_turn(current, user, status=status_cb, input_lang=input_lang)
+        st.clear()
 
-            if cfg.debug.enabled:
-                route = {"action": res.action, "kb_mode": res.kb_mode, "reason": res.reason}
-                console.print(f' route={json.dumps(route, ensure_ascii=False)}')
+        if cfg.debug.enabled:
+            route = {"action": res.action, "kb_mode": res.kb_mode, "reason": res.reason}
+            console.print(f" route={json.dumps(route, ensure_ascii=False)}")
 
-            console.print(f"🤖 {res.content}")
-
-        asyncio.run(_run())
+        console.print(f"🤖 {res.content}")
 
 
 @app.command()
-def telegram():
+def chat(session: str = typer.Option("default", "--session", "-s")) -> None:
+    asyncio.run(_chat_loop(session))
+
+
+@app.command()
+def telegram() -> None:
     cfg = load_config()
     if not cfg.telegram.enabled:
         console.print("Telegram is disabled in config. Set telegram.enabled=true.")
@@ -199,7 +213,7 @@ def telegram():
 
 
 @app.command()
-def init(force: bool = typer.Option(False, "--force", help="Overwrite existing .picobot/config.json")):
+def init(force: bool = typer.Option(False, "--force", help="Overwrite existing .picobot/config.json")) -> None:
     """Initialize project-local .picobot/ structure and config.json."""
     res = init_project(force=force)
     if res.get("status") == "exists":

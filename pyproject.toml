@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "picobot: a pico clone-subset of nanobot with Telegram + CLI, local Ollama, KB ingest/search, memory."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "picobot contributors" }]
 
 dependencies = [
@@ -32,6 +32,9 @@ dev = [
 picobot = "picobot.__main__:app"
 
 [tool.pytest.ini_options]
+markers = [
+  "asyncio: mark a test as asyncio."
+]
 addopts = "-q"
 asyncio_mode = "auto"
 
@@ -42,3 +45,8 @@ target-version = "py311"
 
 [tool.setuptools.package-data]
 picobot = ["config/*.json"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["picobot*"]
+exclude = ["outputs*"]
