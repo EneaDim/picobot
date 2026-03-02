@@ -69,7 +69,26 @@ def _help_text(use_emojis: bool) -> str:
     )
 
 
-async def _chat_loop(session_id: str) -> None:
+def _run_coro(coro):
+    """
+    Run an async coroutine from sync CLI code, without nesting asyncio.run().
+    prompt_toolkit may already create an event loop internally.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    if loop.is_running():
+        # We should never be here because we don't call this from inside an async context,
+        # but keep a safe error if it happens.
+        raise RuntimeError("Event loop already running; cannot run coroutine from sync context.")
+    return loop.run_until_complete(coro)
+
+
+@app.command()
+def chat(session: str = typer.Option("default", "--session", "-s")) -> None:
     cfg = load_config()
     ws = workspace_path(cfg)
     sm = SessionManager(ws)
@@ -77,7 +96,7 @@ async def _chat_loop(session_id: str) -> None:
     provider = OllamaProvider(cfg.ollama.base_url, cfg.ollama.model, timeout_s=cfg.ollama.timeout_s)
     orch = Orchestrator(cfg, provider, ws)
 
-    current = sm.get(session_id)
+    current = sm.get(session)
 
     _print_banner()
 
@@ -115,7 +134,6 @@ async def _chat_loop(session_id: str) -> None:
             console.print(_help_text(cfg.ui.use_emojis))
             continue
 
-        # Local CLI-only commands (session/kb/mem)
         if user.startswith("/session"):
             parts = user.split()
             if len(parts) >= 2 and parts[1] == "list":
@@ -164,7 +182,6 @@ async def _chat_loop(session_id: str) -> None:
             console.print("Usage: /mem show | /mem clear")
             continue
 
-        # Shared UI commands (if any) — keep, but do NOT let it bypass orchestrator for normal chat.
         cr = handle_command(user, session=current, session_manager=sm)
         if cr.handled:
             if cr.new_session_id:
@@ -172,10 +189,12 @@ async def _chat_loop(session_id: str) -> None:
             console.print(cr.reply)
             continue
 
-        # 🔥 Dynamic language for CLI text input (enables consistent tools/podcast/ingest behavior)
         input_lang = detect_language(user, default=getattr(cfg, "default_language", "it"))
 
-        res = await orch.one_turn(current, user, status=status_cb, input_lang=input_lang)
+        async def _turn():
+            return await orch.one_turn(current, user, status=status_cb, input_lang=input_lang)
+
+        res = _run_coro(_turn())
         st.clear()
 
         if cfg.debug.enabled:
@@ -183,13 +202,9 @@ async def _chat_loop(session_id: str) -> None:
             console.print(f" route={json.dumps(route, ensure_ascii=False)}")
 
         console.print(f"🤖 {res.content}")
-
-
-@app.command()
-def chat(session: str = typer.Option("default", "--session", "-s")) -> None:
-    asyncio.run(_chat_loop(session))
-
-
+        ap = getattr(res, "audio_path", None)
+        if ap:
+            console.print(f"📁 {ap}")
 @app.command()
 def telegram() -> None:
     cfg = load_config()

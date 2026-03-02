@@ -190,7 +190,7 @@ class Orchestrator:
                     pass
                 content = ("⚠️ Errore podcast. Controlla il terminale." if lang == "it" else "⚠️ Podcast error. Check terminal.")
                 mm.append_turn("assistant", content)
-                return TurnResult(content=content, action="podcast", kb_mode="keep", reason="podcast error")
+                return TurnResult(content=content, action="podcast", kb_mode="keep", reason="podcast error", audio_path=pr.audio_path)
 
             content = "✅ Podcast pronto." if lang == "it" else "✅ Podcast ready."
             if getattr(getattr(self.cfg, "podcast", None), "send_script_text", False):

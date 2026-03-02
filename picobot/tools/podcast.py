@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import subprocess
 import sys
 import wave
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -24,6 +26,20 @@ def _pod_dbg(cfg, msg: str) -> None:
             print(f"[podcast] {msg}", file=sys.stderr)
     except Exception:
         pass
+
+
+def _slug(s: str, max_len: int = 48) -> str:
+    t = (s or "").strip().lower()
+    t = re.sub(r"\s+", "-", t)
+    t = re.sub(r"[^a-z0-9\-_]+", "", t)
+    t = t.strip("-_")
+    if not t:
+        t = "podcast"
+    return t[: max(12, int(max_len))]
+
+
+def _utc_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
 def detect_podcast_request(text: str, cfg) -> tuple[str, str] | None:
@@ -61,6 +77,7 @@ def detect_podcast_request(text: str, cfg) -> tuple[str, str] | None:
 class PodcastResult:
     audio_path: str
     script: str
+    run_dir: str
 
 
 def _resolve_piper_model(cfg, lang: str, voice_id: str) -> str:
@@ -73,17 +90,15 @@ def _resolve_piper_model(cfg, lang: str, voice_id: str) -> str:
         cand = Path(voices_dir).expanduser() / f"{voice_id}.onnx"
         if cand.exists():
             return str(cand)
-        # STRICT: if a voice_id is explicitly requested, do not silently swap to another voice
+        # strict: if explicitly requested but missing, do not silently swap
         return ""
 
-    # If no voice_id was set, fall back to a language-default model path
     if (lang or "").lower().startswith("it"):
         return str(getattr(tools, "piper_model_it", "") or "")
     return str(getattr(tools, "piper_model_en", "") or "")
 
 
 def _get_voice_ids(cfg, lang: str) -> tuple[str, str]:
-    """Return (narrator_id, expert_id). Empty strings mean 'not configured'."""
     pcfg = getattr(cfg, "podcast", None)
     voices = getattr(pcfg, "voices", None) if pcfg else None
 
@@ -97,9 +112,7 @@ def _get_voice_ids(cfg, lang: str) -> tuple[str, str]:
         narrator_id = ""
         expert_id = ""
 
-    narrator_id = narrator_id.strip()
-    expert_id = expert_id.strip()
-    return narrator_id, expert_id
+    return narrator_id.strip(), expert_id.strip()
 
 
 async def _run(cmd: list[str], timeout_s: float) -> tuple[int, str, str]:
@@ -200,7 +213,6 @@ def _sanitize_script(script: str) -> str:
     if m:
         t = t[m.start() :].strip()
 
-    # keep only labeled lines
     kept: list[str] = []
     for line in t.splitlines():
         line = line.strip()
@@ -209,25 +221,7 @@ def _sanitize_script(script: str) -> str:
         if re.match(r"^(NARRATOR|EXPERT)\s*:\s*", line, flags=re.I):
             kept.append(line)
     t = "\n".join(kept).strip()
-    if not t:
-        return ""
-
-    # drop meta-intro narrator lines
-    tlines = t.splitlines()
-    if tlines and tlines[0].upper().startswith("NARRATOR:"):
-        body = tlines[0][len("NARRATOR:") :].strip().lower()
-        if ("ecco" in body) or ("dialogo" in body) or ("oggi abbiamo" in body) or ("breve" in body):
-            tlines = tlines[1:]
-
-    cleaned: list[str] = []
-    for ln in tlines:
-        if ln.upper().startswith("NARRATOR:"):
-            body = ln[len("NARRATOR:") :].strip().lower()
-            if body.startswith("ecco") or ("ecco" in body and len(body.split()) <= 10):
-                continue
-        cleaned.append(ln)
-
-    return "\n".join(cleaned).strip()
+    return t
 
 
 def _parse_dialogue(script: str) -> list[tuple[str, str]]:
@@ -244,19 +238,12 @@ def _parse_dialogue(script: str) -> list[tuple[str, str]]:
             body = re.sub(r"\s+", " ", body).strip()
             blocks.append((spk, body))
 
-    if not blocks:
-        plain = re.sub(r"\s+", " ", t).strip()
-        if not plain:
-            return []
-        words = plain.split()
-        mid = max(10, len(words) // 2)
-        blocks = [("NARRATOR", " ".join(words[:mid]).strip()), ("EXPERT", " ".join(words[mid:]).strip())]
-
+    # guarantee both speakers (safe)
     spks = {spk for spk, _ in blocks}
-    if "NARRATOR" not in spks and blocks:
+    if blocks and "NARRATOR" not in spks:
         blocks[0] = ("NARRATOR", blocks[0][1])
     spks = {spk for spk, _ in blocks}
-    if "EXPERT" not in spks and blocks:
+    if blocks and "EXPERT" not in spks:
         blocks.append(("EXPERT", blocks[-1][1]))
 
     return blocks
@@ -335,7 +322,6 @@ def _concat_wavs(wavs: list[Path], out_wav: Path, ffmpeg_bin: str) -> None:
     if not wavs:
         raise RuntimeError("no wav segments")
 
-    # Try direct concat only if all params match
     params = None
     frames: list[bytes] = []
     try:
@@ -366,7 +352,6 @@ def _concat_wavs(wavs: list[Path], out_wav: Path, ffmpeg_bin: str) -> None:
     except Exception:
         pass
 
-    # Fallback: normalize+concat via ffmpeg
     ff = (ffmpeg_bin or "ffmpeg").strip() or "ffmpeg"
     out_wav.parent.mkdir(parents=True, exist_ok=True)
 
@@ -414,6 +399,14 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
     audience = str(getattr(pcfg, "audience", "general") or "general")
     style = str(getattr(pcfg, "style", "warm, curious, practical") or "warm, curious, practical")
 
+    # ordered output structure: outputs/podcasts/<stamp>_<slug>/...
+    base_out = Path(getattr(pcfg, "output_dir", "outputs/podcasts") or "outputs/podcasts").expanduser()
+    run_name = f"{_utc_stamp()}_{_slug(topic)}"
+    run_dir = (base_out / run_name).resolve()
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    keep_segments = bool(getattr(pcfg, "keep_segments", False))
+
     if status:
         await status("🎙 Writing script…")
 
@@ -438,19 +431,28 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
 
     script = (resp.content or "").strip()
     _pod_dbg(cfg, f"llm script chars={len(script)}")
-    _pod_dbg(cfg, (script[:1200] + ("..." if len(script) > 1200 else "")))
 
     parts = _merge_same_speaker(_parse_dialogue(script))
     parts = _merge_same_speaker(_enforce_word_cap(parts, hard_cap_words))
-    _pod_dbg(cfg, f"parsed parts={len(parts)} speakers={[sp for sp, _ in parts]}")
     if not parts:
         raise RuntimeError("bad script format")
 
+    # persist script + meta (always)
+    (run_dir / "script.txt").write_text(script + "\n", encoding="utf-8")
+    meta = {
+        "topic": topic,
+        "lang": lang,
+        "minutes": minutes,
+        "target_words": target_words,
+        "hard_cap_words": hard_cap_words,
+        "audience": audience,
+        "style": style,
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    (run_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     if status:
         await status("🗣 Synthesizing audio…")
-
-    out_dir = Path(getattr(pcfg, "output_dir", "outputs/podcasts") or "outputs/podcasts").expanduser()
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     narrator_id, expert_id = _get_voice_ids(cfg, lang)
     tts_backend = str(getattr(pcfg, "tts_backend", "piper") or "piper").strip().lower()
@@ -458,52 +460,34 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
     if tts_backend == "qwen_tts":
         if not narrator_id or not expert_id:
             raise RuntimeError("qwen_tts requires narrator/expert voice_id in config")
-        if narrator_id == expert_id:
-            _pod_dbg(cfg, "WARNING: narrator/expert voice_id are identical (same voice).")
     else:
-        # Piper: require explicit voice ids OR accept language defaults if you configured piper_model_{it,en}
-        nm = _resolve_piper_model(cfg, lang, narrator_id)
-        em = _resolve_piper_model(cfg, lang, expert_id)
-        if narrator_id and not nm:
-            _pod_dbg(cfg, f"Missing narrator voice model for voice_id={narrator_id!r}")
+        if narrator_id and not _resolve_piper_model(cfg, lang, narrator_id):
             raise RuntimeError("missing narrator voice model")
-        if expert_id and not em:
-            _pod_dbg(cfg, f"Missing expert voice model for voice_id={expert_id!r}")
+        if expert_id and not _resolve_piper_model(cfg, lang, expert_id):
             raise RuntimeError("missing expert voice model")
 
-        # If voice ids are not configured, we will synthesize both with language-default model.
-        if not narrator_id:
-            narrator_id = ""
-        if not expert_id:
-            expert_id = ""
-
-        if narrator_id and expert_id and narrator_id == expert_id:
-            _pod_dbg(cfg, "WARNING: narrator/expert voice_id are identical (same voice).")
+    seg_dir = run_dir / "segments"
+    seg_dir.mkdir(parents=True, exist_ok=True)
 
     seg_paths: list[Path] = []
     seg_i = 0
     for spk, txt in parts:
         voice_id = narrator_id if spk == "NARRATOR" else expert_id
-        _pod_dbg(cfg, f"voice {spk} voice_id={voice_id!r}")
-
         subchunks = _split_for_tts(txt, max_chars=320)
-        _pod_dbg(cfg, f"{spk} chunks={len(subchunks)}")
 
         for chunk in subchunks:
             seg_i += 1
-            wav_path = out_dir / f"seg_{seg_i:03d}_{spk.lower()}.wav"
-
+            wav_path = seg_dir / f"seg_{seg_i:03d}_{spk.lower()}.wav"
             if tts_backend == "qwen_tts":
                 await _synthesize_qwen_tts(cfg, chunk, voice_id=voice_id, out_wav=wav_path)
             else:
                 await _synthesize_piper(cfg, chunk, lang=lang, voice_id=voice_id, out_wav=wav_path)
-
             seg_paths.append(wav_path)
 
     tools = getattr(cfg, "tools", None)
     ffmpeg_bin = str(getattr(tools, "ffmpeg_bin", "ffmpeg") or "ffmpeg")
 
-    merged_wav = out_dir / "podcast.wav"
+    merged_wav = run_dir / "podcast.wav"
     _concat_wavs(seg_paths, merged_wav, ffmpeg_bin=ffmpeg_bin)
 
     fmt = str(getattr(pcfg, "audio_format", "mp3") or "mp3").lower().strip()
@@ -512,14 +496,23 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
 
     final_path = merged_wav
     if fmt != "wav":
-        final_path = out_dir / f"podcast.{fmt}"
+        final_path = run_dir / f"podcast.{fmt}"
         cmd = [ffmpeg_bin, "-y", "-i", str(merged_wav), str(final_path)]
         timeout_s = float(getattr(getattr(cfg, "ollama", None), "timeout_s", 120.0) or 120.0)
         rc, _out, err = await _run(cmd, timeout_s=timeout_s)
         if rc != 0:
             raise RuntimeError(f"ffmpeg failed: {err.strip()[:240]}")
 
+    if not keep_segments:
+        # cleanup segments (but keep final files + script/meta)
+        try:
+            for p in seg_dir.glob("*.wav"):
+                p.unlink(missing_ok=True)
+            seg_dir.rmdir()
+        except Exception:
+            pass
+
     if status:
         await status("✅ Podcast ready")
 
-    return PodcastResult(audio_path=str(final_path), script=script)
+    return PodcastResult(audio_path=str(final_path), script=script, run_dir=str(run_dir))

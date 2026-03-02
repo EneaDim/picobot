@@ -23,11 +23,15 @@ PIPER_TARBALLS = {
     "linux_aarch64": "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz",
 }
 
-# voice_id -> HF path prefix (resolve/main). We download BOTH .onnx and .onnx.json
+# voice_id -> either:
+#  - rhasspy prefix (resolve/main/<prefix>) OR
+#  - full base URL (without .onnx/.onnx.json)
+# We download BOTH .onnx and .onnx.json
 VOICE_MAP: dict[str, str] = {
     # IT
     "it_IT-paola-medium": "it/it_IT/paola/medium/it_IT-paola-medium",
-    "it_IT-aurora-medium": "it/it_IT/aurora/medium/it_IT-aurora-medium",
+    "it_IT-aurora-medium": "https://huggingface.co/kirys79/piper_italiano/resolve/main/Aurora/it_IT-aurora-medium",
+    "it_IT-riccardo-low": "it/it_IT/riccardo/low/it_IT-riccardo-low",
     # EN
     "en_US-lessac-medium": "en/en_US/lessac/medium/en_US-lessac-medium",
     "en_US-amy-medium": "en/en_US/amy/medium/en_US-amy-medium",
@@ -246,12 +250,15 @@ exec "$HERE/piper.bin" "$@"
 
 
 def _voice_urls(voice_id: str) -> tuple[str, str] | None:
-    pref = VOICE_MAP.get(voice_id)
-    if not pref:
+    ref = (VOICE_MAP.get(voice_id) or "").strip()
+    if not ref:
         return None
-    base = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{pref}"
+    # ref can be either a rhasspy prefix or a full base URL.
+    if ref.startswith("http://") or ref.startswith("https://"):
+        base = ref
+    else:
+        base = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{ref}"
     return (base + ".onnx", base + ".onnx.json")
-
 
 def _looks_like_json_bytes(b: bytes) -> bool:
     t = (b or b"").lstrip()
