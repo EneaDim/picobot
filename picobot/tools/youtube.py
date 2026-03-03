@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -9,6 +8,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from picobot.tools.base import ToolSpec
+from picobot.tools.terminal_tool import TerminalToolBase
 
 
 def _call_factory_compat(factory, *args, **kwargs):
@@ -26,9 +26,6 @@ _JS_RUNTIME_HINT = (
 
 
 def _normalize_ytdlp_bin(binpath: str) -> str:
-    """Return an executable path for yt-dlp.
-    Accepts either an executable file path or a directory like .../bin.
-    """
     if not binpath:
         return "yt-dlp"
     try:
@@ -61,9 +58,6 @@ def _is_youtube_url(url: str) -> bool:
 
 
 def _lang_from_sub_filename(name: str) -> str:
-    # Examples:
-    # 4kn8HYzBUAE.it.vtt
-    # 4kn8HYzBUAE.it-orig.vtt
     n = name.lower()
     m = re.search(r"\.([a-z]{2,3})(?:-orig)?\.(?:vtt|srt)$", n)
     return (m.group(1) if m else "").lower()
@@ -88,6 +82,14 @@ def _vtt_or_srt_to_text(raw: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+def _ok(data: dict, language: str | None = None) -> dict:
+    return {"ok": True, "data": data, "error": None, "language": language}
+
+
+def _fail(msg: str, language: str | None = None) -> dict:
+    return {"ok": False, "data": {}, "error": msg, "language": language}
+
+
 class YTTranscriptArgs(BaseModel):
     url: str = Field(..., min_length=8)
     lang: Optional[str] = Field(default=None, description="Preferred subtitle language, e.g. en, it")
@@ -95,16 +97,13 @@ class YTTranscriptArgs(BaseModel):
 
 def make_yt_transcript_tool(ytdlp_bin: str, ytdlp_args: list[str] | None = None):
     ytdlp_bin = _normalize_ytdlp_bin(ytdlp_bin)
+    extra_args = list(ytdlp_args or [])
+    runner = TerminalToolBase(allowed_bins=[ytdlp_bin], cwd=".", timeout_s=180, max_output_bytes=200_000)
 
     async def _handler(args: YTTranscriptArgs) -> dict:
         if not _is_youtube_url(args.url):
-            raise ValueError("url must be a YouTube URL")
+            return _fail("url must be a YouTube URL")
 
-        ytdlp = ytdlp_bin or "yt-dlp"
-        extra_args = list(ytdlp_args or [])
-
-        # IMPORTANT: reduce 429 risk by preferring the requested lang first,
-        # otherwise try Italian first then English.
         pref = (args.lang or "").strip().lower()
         if pref:
             langs = f"{pref}.*, {pref}-orig.*"
@@ -112,9 +111,9 @@ def make_yt_transcript_tool(ytdlp_bin: str, ytdlp_args: list[str] | None = None)
             langs = "it.*,it-orig.*,en.*,en-orig.*"
         langs = langs.replace(" ", "")
 
-        def run_ytdlp(out_dir: Path, langs_expr: str) -> subprocess.CompletedProcess[str]:
+        def run_ytdlp(out_dir: Path, langs_expr: str):
             cmd = [
-                ytdlp,
+                ytdlp_bin,
                 *extra_args,
                 "--skip-download",
                 "--write-subs",
@@ -131,31 +130,22 @@ def make_yt_transcript_tool(ytdlp_bin: str, ytdlp_args: list[str] | None = None)
                 "%(id)s.%(ext)s",
                 args.url,
             ]
-            return subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=180,
-            )
+            # terminal-only logs happen inside TerminalToolBase via stderr
+            return runner.run_cmd(cmd, prefix="[yt]")
 
         with tempfile.TemporaryDirectory(prefix="picobot-yt-") as td:
             out_dir = Path(td)
 
-            # First try with preferred/it-first languages, then fallback to "it only",
-            # then fallback to "en only" as last resort.
-            tried: list[tuple[str, subprocess.CompletedProcess[str]]] = []
+            tried = []
             for expr in (langs, "it.*,it-orig.*", "en.*,en-orig.*"):
-                last = run_ytdlp(out_dir, expr)
-                tried.append((expr, last))
+                res = run_ytdlp(out_dir, expr)
+                tried.append((expr, res))
 
                 subs = list(out_dir.rglob("*.vtt"))
                 if not subs:
                     subs = list(out_dir.rglob("*.srt"))
 
-                # Success if we got any subs file, even if some langs failed with 429
                 if subs:
-                    # pick best: prefer non-orig, prefer requested lang if present
                     pref_lang = pref or "it"
 
                     def score(p: Path) -> tuple[int, int, str]:
@@ -170,22 +160,29 @@ def make_yt_transcript_tool(ytdlp_bin: str, ytdlp_args: list[str] | None = None)
                     detected_lang = _lang_from_sub_filename(chosen.name) or (pref or "")
                     raw = chosen.read_text(encoding="utf-8", errors="ignore")
                     text = _vtt_or_srt_to_text(raw)
-                    return {"url": args.url, "language": detected_lang or None, "transcript": text}
+
+                    return _ok(
+                        {"url": args.url, "language": detected_lang or None, "transcript": text},
+                        language=(detected_lang or None),
+                    )
 
             # Failure: no subs at all
             last = tried[-1][1]
-            hint = _js_runtime_hint_if_any(last.stderr)
             stderr = (last.stderr or "").strip()
+            hint = _js_runtime_hint_if_any(stderr)
+
             msg = f"yt-dlp did not produce subtitles (.vtt/.srt). stderr: {stderr[:600]}"
             if hint:
                 msg = msg + "\n" + hint
-            if "http error 429" in stderr.lower() or "too many requests" in stderr.lower():
+            low = stderr.lower()
+            if "http error 429" in low or "too many requests" in low:
                 msg = msg + "\nRate limit (HTTP 429). Try again later or reduce requested languages."
-            raise RuntimeError(msg)
+
+            return _fail(msg)
 
     return ToolSpec(
         name="yt_transcript",
-        description="Fetch YouTube subtitles transcript using yt-dlp (local binary).",
+        description="Fetch YouTube subtitles transcript using yt-dlp (local binary, sandboxed runner).",
         schema=YTTranscriptArgs,
         handler=_handler,
     )
@@ -199,26 +196,29 @@ class YTSummaryArgs(BaseModel):
 def make_yt_summary_tool(ytdlp_bin: str, llm_summarize, ytdlp_args: list[str] | None = None):
     ytdlp_bin = _normalize_ytdlp_bin(ytdlp_bin)
 
-    """
-    llm_summarize(transcript: str, url: str, lang: Optional[str]) -> str
-    lang MUST be the transcript language (not user language).
-    """
-
     async def _handler(args: YTSummaryArgs) -> dict:
         if not _is_youtube_url(args.url):
-            raise ValueError("url must be a YouTube URL")
+            return _fail("url must be a YouTube URL")
 
         t_tool = _call_factory_compat(make_yt_transcript_tool, ytdlp_bin, ytdlp_args=ytdlp_args)
-        t = await t_tool.handler(t_tool.schema.model_validate({"url": args.url, "lang": args.lang}))
-        transcript = t["transcript"]
-        transcript_lang = t.get("language") or args.lang
+        t_res = await t_tool.handler(t_tool.schema.model_validate({"url": args.url, "lang": args.lang}))
+        if not t_res.get("ok"):
+            return t_res
+
+        data = t_res.get("data") or {}
+        transcript = (data.get("transcript") or "").strip()
+        transcript_lang = (data.get("language") or args.lang or None)
+
         summary = await llm_summarize(transcript=transcript, url=args.url, lang=transcript_lang)
-        return {
-            "url": args.url,
-            "summary": summary,
-            "language": transcript_lang,
-            "transcript_chars": len(transcript),
-        }
+        return _ok(
+            {
+                "url": args.url,
+                "summary": summary,
+                "language": transcript_lang,
+                "transcript_chars": len(transcript),
+            },
+            language=transcript_lang,
+        )
 
     return ToolSpec(
         name="yt_summary",

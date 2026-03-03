@@ -244,3 +244,48 @@ def ping_reply(lang: str) -> str:
     if (lang or "").lower().startswith("it"):
         return "Pong! Come posso aiutarti?"
     return "Pong! How can I help?"
+
+
+# =========================================================
+# Podcast prompts (centralized, compact, IT/EN)
+# =========================================================
+
+def podcast_system_prompt(lang: str, duration_s: int = 60) -> str:
+    lang_l = (lang or "it").lower()
+    if lang_l.startswith("en"):
+        return (
+            "You write a short podcast script as pure dialogue.\n"
+            "Rules:\n"
+            "- Output ONLY lines in this format: NARRATOR: ... or EXPERT: ...\n"
+            "- First line MUST be NARRATOR.\n"
+            "- Use BOTH voices.\n"
+            "- No titles, no bullet lists, no markdown.\n"
+            f"- Target length ~{duration_s} seconds (hard cap 2 minutes).\n"
+            "- Clear, natural spoken style.\n"
+        )
+    return (
+        "Scrivi un breve copione podcast come SOLO dialogo.\n"
+        "Regole:\n"
+        "- Output SOLO righe nel formato: NARRATOR: ... oppure EXPERT: ...\n"
+        "- Prima riga SEMPRE NARRATOR.\n"
+        "- Usa ENTRAMBE le voci.\n"
+        "- Niente titoli, niente liste, niente markdown.\n"
+        f"- Durata target ~{duration_s} secondi (cap 2 minuti).\n"
+        "- Stile parlato, chiaro.\n"
+    )
+
+
+def podcast_user_prompt(lang: str, topic: str, duration_s: int = 60) -> str:
+    lang_l = (lang or "it").lower()
+    topic = (topic or "").strip()
+    if lang_l.startswith("en"):
+        return (
+            f"Topic: {topic}\n"
+            f"Duration: ~{duration_s}s\n"
+            "Write the dialogue now."
+        )
+    return (
+        f"Argomento: {topic}\n"
+        f"Durata: ~{duration_s}s\n"
+        "Scrivi ora il dialogo."
+    )

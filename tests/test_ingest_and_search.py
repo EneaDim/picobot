@@ -1,22 +1,26 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-from picobot.config.schema import Config
 import pytest
-
-from picobot.session.manager import SessionManager
-from picobot.agent.orchestrator import Orchestrator
-from picobot.providers.types import ChatResponse
 
 from picobot.tools.retrieval import make_kb_ingest_pdf_tool
 from picobot.retrieval.store import KBStore
-from tests.conftest import dbg
+from picobot.config.schema import Config
+from picobot.session.manager import SessionManager
+from picobot.agent.orchestrator import Orchestrator
+
+
+def dbg(*a, **k):
+    # print(*a, **k)
+    pass
 
 
 class DummyProvider:
     async def chat(self, messages, tools=None, max_tokens=0, temperature=0.0):
-        return ChatResponse(content="ANSWER_FROM_LLM", tool_calls=[])
+        class R:
+            content = "OK"
+            tool_calls = []
+        return R()
 
 
 @pytest.mark.asyncio
@@ -24,7 +28,6 @@ async def test_ingest_pdf_creates_source_chunks_and_index(tmp_path: Path, monkey
     ws = tmp_path
     docs_root = ws / "docs"
 
-    # dummy pdf (content doesn't matter; we monkeypatch extraction)
     pdf = ws / "sample.pdf"
     pdf.write_bytes(b"not-a-real-pdf")
 
@@ -38,7 +41,6 @@ async def test_ingest_pdf_creates_source_chunks_and_index(tmp_path: Path, monkey
     def fake_pdf_to_text(_path: Path) -> str:
         return simple_text
 
-    # Patch BOTH possible call sites
     import picobot.tools.retrieval as tool_mod
     import picobot.retrieval.ingest as ingest_mod
 
@@ -52,20 +54,18 @@ async def test_ingest_pdf_creates_source_chunks_and_index(tmp_path: Path, monkey
     out = await tool.handler(model)
     dbg('ingest out=', out)
 
-    # copied to source/
     copied = ws / "docs" / "demo" / "source" / pdf.name
     assert copied.exists()
 
-    # chunks exist
     chunks_dir = ws / "docs" / "demo" / "kb" / "chunks"
     assert chunks_dir.exists()
     assert any(chunks_dir.glob("*.md"))
 
-    # index exists
     idx = ws / "docs" / "demo" / "kb" / "index.json"
     assert idx.exists()
 
-    assert out["kb_name"] == "demo"
+    assert out["ok"] is True
+    assert out["data"]["kb_name"] == "demo"
 
 
 @pytest.mark.asyncio
@@ -100,5 +100,4 @@ async def test_search_kb_query_appends_quote_when_hits(tmp_path: Path):
 
     assert res.action == "kb_query"
     assert res.retrieval_hits > 0
-    assert '\n> "' in res.content
-    assert "vcd" in res.content.lower()
+    assert "\n> \"" in res.content

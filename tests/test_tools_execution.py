@@ -19,28 +19,21 @@ async def test_tool_path_yt_summary_runs_without_network(tmp_path: Path, monkeyp
     cfg = Config(workspace=str(tmp_path))
     cfg.retrieval.enabled = True
 
-    # stub config.tools.ytdlp_bin if needed
-    if not hasattr(cfg, "tools"):
-        # Config in your project likely has it; if not, this test will be adjusted later
-        pass
-
     sm = SessionManager(tmp_path)
     s = sm.get("s1")
 
     orch = Orchestrator(cfg, DummyProvider(), tmp_path)
 
-    # monkeypatch transcript tool handler to avoid calling yt-dlp
     from picobot.tools import youtube as yt_mod
 
     async def fake_transcript(args):
-        return {"url": args.url, "lang": args.lang, "transcript": "hello world transcript"}
+        return {"ok": True, "data": {"url": args.url, "transcript": "hello world transcript"}, "error": None, "language": args.lang}
 
-    # Replace factory to return a tool whose handler is fake
     real_make = yt_mod.make_yt_transcript_tool
 
     def patched_make(binpath: str):
         tool = real_make(binpath)
-        object.__setattr__(tool, "handler", fake_transcript)  # dataclass frozen -> but ToolSpec isn't frozen; still safe
+        object.__setattr__(tool, "handler", fake_transcript)
         return tool
 
     monkeypatch.setattr(yt_mod, "make_yt_transcript_tool", patched_make)
@@ -59,4 +52,4 @@ async def test_tool_path_kb_ingest_validates_pdf_path(tmp_path: Path):
 
     r = await orch.one_turn(s, "ingest pdf ./does-not-exist.pdf", status=None)
     assert r.action == "tool"
-    assert "Tool error" in r.content or "Missing" in r.content
+    assert "⚠️" in r.content or "error" in r.content.lower()

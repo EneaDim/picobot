@@ -1,19 +1,35 @@
 {
   "workspace": ".picobot/workspace",
-  "default_kb_name": "default",
-  "default_language": "it",
+
+  "language": {
+    "default": "it"
+  },
+
+  "kb": {
+    "default_name": "default",
+    "auto_route_questions": false
+  },
+
   "ollama": {
     "base_url": "http://localhost:11434",
     "model": "qwen2.5:3b-instruct-q4_0",
     "timeout_s": 600
   },
-  "use_embeddings": false,
-  "embedding_model": "nomic-embed-text:latest",
-  "summarizer_model": "qwen2.5:3b-instruct-q4_0",
+
+  "embeddings": {
+    "enabled": false,
+    "model": "nomic-embed-text:latest"
+  },
+
+  "summarizer": {
+    "model": "qwen2.5:3b-instruct-q4_0"
+  },
+
   "memory_limits": {
     "max_history_lines": 300,
     "tail_lines": 900
   },
+
   "retrieval": {
     "enabled": true,
     "bm25_candidates": 9,
@@ -23,60 +39,124 @@
     "bm25_k1": 1.2,
     "bm25_b": 0.75
   },
+
   "tools": {
     "base_dir": ".picobot/tools",
-    "whisper_cpp_dir": ".picobot/tools/whisper.cpp",
-    "whisper_model": ".picobot/tools/whisper.cpp/models/ggml-small.bin",
-    "whisper_cpp_main_path": ".picobot/tools/whisper.cpp/build/bin/whisper-cli",
-    "ytdlp_bin": ".picobot/tools/yt-dlp/bin/yt-dlp",
-    "ffmpeg_bin": ".picobot/tools/ffmpeg/bin/ffmpeg",
-    "arecord_bin": ".picobot/tools/arecord/bin/arecord",
-    "aplay_bin": ".picobot/tools/aplay/bin/aplay",
 
-    "piper_bin": ".picobot/tools/piper/bin/piper",
-    "piper_model_it": ".picobot/tools/piper/models/it_IT-paola-medium.onnx",
-    "piper_model_en": ".picobot/tools/piper/models/en_US-lessac-medium.onnx",
+    "bins": {
+      "ytdlp": ".picobot/tools/yt-dlp/bin/yt-dlp",
+      "ffmpeg": ".picobot/tools/ffmpeg/bin/ffmpeg",
+      "arecord": ".picobot/tools/arecord/bin/arecord",
+      "aplay": ".picobot/tools/aplay/bin/aplay",
 
-    "piper_voices_dir": ".picobot/tools/piper/models",
-    "piper_voices_official": "",
-    "piper_voices_hf": "",
+      "whisper_cpp_cli": ".picobot/tools/whisper.cpp/build/bin/whisper-cli",
+      "piper": ".picobot/tools/piper/bin/piper",
 
-    "qwen_tts_bin": "",
-    "qwen_tts_model_dir": "",
+      "qwen_tts": ""
+    },
 
-    "ytdlp_args": [
-      "--js-runtimes",
-      "node:/usr/bin/node"
-    ]
+    "models": {
+      "whisper_cpp": ".picobot/tools/whisper.cpp/models/ggml-small.bin",
+
+      "piper_it": ".picobot/tools/piper/models/it_IT-paola-medium.onnx",
+      "piper_en": ".picobot/tools/piper/models/en_US-lessac-medium.onnx",
+
+      "qwen_tts_dir": ""
+    },
+
+    "voices": {
+      "piper_voices_dir": ".picobot/tools/piper/models",
+      "piper_voices_official": "",
+      "piper_voices_hf": ""
+    },
+
+    "sandbox_exec": {
+      "enabled": true,
+      "timeout_s": 180,
+      "max_output_bytes": 200000,
+
+      "allowed_bins": [
+        "yt-dlp",
+        "ffmpeg",
+        "arecord",
+        "aplay",
+        "piper",
+        "whisper-cli",
+        "python",
+        "bash"
+      ]
+    },
+
+    "youtube": {
+      "enabled": true,
+      "timeout_s": 180,
+
+      "ytdlp_args": [
+        "--js-runtimes",
+        "node:/usr/bin/node"
+      ],
+
+      "prefer_sub_langs": ["it", "en"]
+    }
   },
+
+  "sandbox": {
+    "web": {
+      "enabled": false,
+      "timeout_s": 10,
+      "max_bytes": 200000,
+      "whitelist_domains": []
+    },
+    "file": {
+      "enabled": true,
+      "root": ".picobot/workspace",
+      "max_bytes": 200000
+    },
+    "python": {
+      "enabled": true,
+      "timeout_s": 5,
+      "cwd": ".picobot/workspace",
+      "no_network": true
+    }
+  },
+
   "ui": {
     "use_emojis": true,
     "use_prompt_toolkit": true,
     "vi_mode": false
   },
+
   "telegram": {
     "enabled": true,
     "bot_token": "YOUR_BOT_TOKEN",
+
     "kb_per_chat": true,
     "pdf_auto_ingest": true,
+
     "stt_auto": true,
     "max_voice_seconds": 240,
     "send_transcript_flag": false,
+
     "debug_terminal": true
   },
+
   "podcast": {
     "enabled": true,
     "tts_backend": "piper",
     "audio_format": "mp3",
+
     "default_minutes": 1,
     "max_minutes": 2,
     "target_words_per_minute": 150,
+
     "send_script_text": false,
     "output_dir": "outputs/podcasts",
+
     "triggers": {
       "it": ["voglio un podcast su", "fammi un podcast su"],
       "en": ["i want a podcast about", "make a podcast about"]
     },
+
     "voices": {
       "it": {
         "narrator": { "voice_id": "it_IT-paola-medium" },
@@ -88,10 +168,45 @@
       }
     }
   },
+
   "debug": {
     "enabled": true
   },
+
   "web": {
     "enabled": false
+  },
+
+  "compat": {
+    "default_language": "it",
+    "default_kb_name": "default",
+
+    "use_embeddings": false,
+    "embedding_model": "nomic-embed-text:latest",
+    "summarizer_model": "qwen2.5:3b-instruct-q4_0",
+
+    "tools_compat": {
+      "whisper_cpp_dir": ".picobot/tools/whisper.cpp",
+      "whisper_model": ".picobot/tools/whisper.cpp/models/ggml-small.bin",
+      "whisper_cpp_main_path": ".picobot/tools/whisper.cpp/build/bin/whisper-cli",
+
+      "ytdlp_bin": ".picobot/tools/yt-dlp/bin/yt-dlp",
+      "ffmpeg_bin": ".picobot/tools/ffmpeg/bin/ffmpeg",
+      "arecord_bin": ".picobot/tools/arecord/bin/arecord",
+      "aplay_bin": ".picobot/tools/aplay/bin/aplay",
+
+      "piper_bin": ".picobot/tools/piper/bin/piper",
+      "piper_model_it": ".picobot/tools/piper/models/it_IT-paola-medium.onnx",
+      "piper_model_en": ".picobot/tools/piper/models/en_US-lessac-medium.onnx",
+
+      "piper_voices_dir": ".picobot/tools/piper/models",
+      "piper_voices_official": "",
+      "piper_voices_hf": "",
+
+      "qwen_tts_bin": "",
+      "qwen_tts_model_dir": "",
+
+      "ytdlp_args": ["--js-runtimes", "node:/usr/bin/node"]
+    }
   }
 }

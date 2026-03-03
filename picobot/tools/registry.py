@@ -7,6 +7,32 @@ from picobot.tools.base import ToolSpec
 
 
 class ToolRegistry:
+
+    def resolve_name(self, name: str) -> str:
+        n = (name or "").strip()
+        if not n:
+            return ""
+        if n in self.tools:
+            return n
+        # common normalizations
+        n2 = n.replace("-", "_")
+        if n2 in self.tools:
+            return n2
+        n3 = n.replace("_", "-")
+        if n3 in self.tools:
+            return n3
+        # explicit aliases (keep minimal)
+        aliases = {
+            "py": "sandbox_python",
+            "python": "sandbox_python",
+            "sandbox:python": "sandbox_python",
+            "file": "sandbox_file",
+            "sandbox:file": "sandbox_file",
+        }
+        a = aliases.get(n)
+        if a and a in self.tools:
+            return a
+        return n  # fallback (unknown)
     def __init__(self) -> None:
         self._tools: Dict[str, ToolSpec] = {}
 

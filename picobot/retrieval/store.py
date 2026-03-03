@@ -222,7 +222,6 @@ class KBStore:
             return None
 
         return None
-        return None
 
     def rebuild_index(self, k1: float = 1.2, b: float = 0.75) -> BM25Index:
         chunks = iter_all_chunks(self.kb_root)
@@ -230,3 +229,15 @@ class KBStore:
         self.kb_root.mkdir(parents=True, exist_ok=True)
         self.index_path.write_text(json.dumps(idx.to_dict(), indent=2), encoding="utf-8")
         return idx
+
+    def search(self, query: str, top_k: int = 5) -> list[dict]:
+        """Return top-k chunks with score and text (minimal helper for tools/orchestrator)."""
+        idx = self.load_index()
+        if not idx:
+            return []
+        scored = sorted(idx.score(query), key=lambda x: x[1], reverse=True)
+        top = [(cid, s) for cid, s in scored if s > 0][: max(1, int(top_k))]
+        out: list[dict] = []
+        for cid, s in top:
+            out.append({"chunk_id": cid, "score": float(s), "text": self.read_chunk(cid)})
+        return out

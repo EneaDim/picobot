@@ -10,9 +10,9 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional, Tuple
 
-from picobot.agent.prompts import PromptPack, detect_language, podcast_system
+from picobot.agent.prompts import detect_language, podcast_system_prompt, podcast_user_prompt
 
 StatusCb = Callable[[str], Awaitable[None]]
 
@@ -42,35 +42,61 @@ def _utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
-def detect_podcast_request(text: str, cfg) -> tuple[str, str] | None:
+# ---------------------------------------------------------
+# Trigger (NO LLM): config-driven + permissive "podcast ..." fallback
+# ---------------------------------------------------------
+
+_EN_FALLBACK = ["podcast", "podcast about", "make a podcast", "build a podcast", "generate a podcast"]
+_IT_FALLBACK = ["podcast", "podcast su", "crea un podcast", "fammi un podcast", "genera un podcast", "fai un podcast"]
+
+
+def detect_podcast_request(text: str, cfg) -> Optional[Tuple[str, str]]:
     t = (text or "").strip()
     if not t:
         return None
-
-    default_lang = getattr(cfg, "default_language", "it")
-    lang = detect_language(t, default=default_lang)
 
     pcfg = getattr(cfg, "podcast", None)
     if not pcfg or not getattr(pcfg, "enabled", False):
         return None
 
-    triggers = getattr(pcfg, "triggers", None)
-    if not triggers:
-        return None
-
-    try:
-        trig_list = list(getattr(triggers, lang))
-    except Exception:
-        trig_list = []
-
+    default_lang = getattr(cfg, "default_language", "it")
+    lang = detect_language(t, default=default_lang)
     low = t.lower()
+
+    triggers = getattr(pcfg, "triggers", None)
+    trig_list: list[str] = []
+    if triggers:
+        try:
+            trig_list = list(getattr(triggers, lang) or [])
+        except Exception:
+            trig_list = []
+
+    # Always include safe fallbacks (still deterministic, no LLM)
+    if (lang or "").lower().startswith("it"):
+        trig_list = [*(trig_list or []), *_IT_FALLBACK]
+    else:
+        trig_list = [*(trig_list or []), *_EN_FALLBACK]
+
     for trig in trig_list:
         trig_low = (trig or "").strip().lower()
-        if trig_low and low.startswith(trig_low):
+        if not trig_low:
+            continue
+
+        if low.startswith(trig_low):
             topic = t[len(trig) :].strip(" \t\n\r:,-")
             return (topic or "podcast", lang)
 
+    # extra permissive: any message starting with "podcast" triggers
+    if low.startswith("podcast"):
+        topic = t[len("podcast") :].strip(" \t\n\r:,-")
+        return (topic or "podcast", lang)
+
     return None
+
+
+# ---------------------------------------------------------
+# Output
+# ---------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -78,6 +104,11 @@ class PodcastResult:
     audio_path: str
     script: str
     run_dir: str
+
+
+# ---------------------------------------------------------
+# TTS resolution (matches config/schema.py)
+# ---------------------------------------------------------
 
 
 def _resolve_piper_model(cfg, lang: str, voice_id: str) -> str:
@@ -94,8 +125,8 @@ def _resolve_piper_model(cfg, lang: str, voice_id: str) -> str:
         return ""
 
     if (lang or "").lower().startswith("it"):
-        return str(getattr(tools, "piper_model_it", "") or "")
-    return str(getattr(tools, "piper_model_en", "") or "")
+        return str(getattr(tools, "piper_model_it", "") or "").strip()
+    return str(getattr(tools, "piper_model_en", "") or "").strip()
 
 
 def _get_voice_ids(cfg, lang: str) -> tuple[str, str]:
@@ -197,6 +228,10 @@ async def _synthesize_qwen_tts(cfg, text: str, voice_id: str, out_wav: Path) -> 
         raise RuntimeError(f"qwen_tts failed: {err.strip()[:240]}")
 
 
+# ---------------------------------------------------------
+# Script parsing (robust, deterministic)
+# ---------------------------------------------------------
+
 def _sanitize_script(script: str) -> str:
     t = (script or "").strip()
     if not t:
@@ -220,8 +255,7 @@ def _sanitize_script(script: str) -> str:
             continue
         if re.match(r"^(NARRATOR|EXPERT)\s*:\s*", line, flags=re.I):
             kept.append(line)
-    t = "\n".join(kept).strip()
-    return t
+    return "\n".join(kept).strip()
 
 
 def _parse_dialogue(script: str) -> list[tuple[str, str]]:
@@ -382,6 +416,10 @@ def _concat_wavs(wavs: list[Path], out_wav: Path, ffmpeg_bin: str) -> None:
     subprocess.run(cmd, check=True)
 
 
+# ---------------------------------------------------------
+# Main generator (uses cfg.podcast + cfg.tools; prompts centralized)
+# ---------------------------------------------------------
+
 async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusCb | None = None) -> PodcastResult:
     pcfg = getattr(cfg, "podcast", None)
     if not pcfg or not getattr(pcfg, "enabled", False):
@@ -396,10 +434,7 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
     target_words = int(minutes * target_wpm)
     target_words = max(80, min(target_words, hard_cap_words))
 
-    audience = str(getattr(pcfg, "audience", "general") or "general")
-    style = str(getattr(pcfg, "style", "warm, curious, practical") or "warm, curious, practical")
-
-    # ordered output structure: outputs/podcasts/<stamp>_<slug>/...
+    # outputs/podcasts/<stamp>_<slug>/...
     base_out = Path(getattr(pcfg, "output_dir", "outputs/podcasts") or "outputs/podcasts").expanduser()
     run_name = f"{_utc_stamp()}_{_slug(topic)}"
     run_dir = (base_out / run_name).resolve()
@@ -410,19 +445,12 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
     if status:
         await status("🎙 Writing script…")
 
-    pp = PromptPack(lang=lang)
-    prompt = pp.podcast_writer(
-        topic=topic,
-        target_words=target_words,
-        hard_cap_words=hard_cap_words,
-        audience=audience,
-        style=style,
-    )
+    duration_s = int(minutes * 60)
 
     resp = await provider.chat(
         messages=[
-            {"role": "system", "content": podcast_system(lang)},
-            {"role": "user", "content": prompt},
+            {"role": "system", "content": podcast_system_prompt(lang=lang, duration_s=duration_s)},
+            {"role": "user", "content": podcast_user_prompt(lang=lang, topic=topic, duration_s=duration_s)},
         ],
         tools=None,
         max_tokens=900,
@@ -445,8 +473,6 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
         "minutes": minutes,
         "target_words": target_words,
         "hard_cap_words": hard_cap_words,
-        "audience": audience,
-        "style": style,
         "created_utc": datetime.now(timezone.utc).isoformat(),
     }
     (run_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -456,6 +482,9 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
 
     narrator_id, expert_id = _get_voice_ids(cfg, lang)
     tts_backend = str(getattr(pcfg, "tts_backend", "piper") or "piper").strip().lower()
+
+    if narrator_id == expert_id and narrator_id:
+        raise RuntimeError("podcast voices must be different (narrator != expert)")
 
     if tts_backend == "qwen_tts":
         if not narrator_id or not expert_id:
@@ -504,7 +533,6 @@ async def generate_podcast(cfg, provider, topic: str, lang: str, status: StatusC
             raise RuntimeError(f"ffmpeg failed: {err.strip()[:240]}")
 
     if not keep_segments:
-        # cleanup segments (but keep final files + script/meta)
         try:
             for p in seg_dir.glob("*.wav"):
                 p.unlink(missing_ok=True)

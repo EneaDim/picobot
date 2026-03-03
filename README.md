@@ -1,76 +1,117 @@
 # picobot 🤖✨
 
-A local-first agent that combines:
+**picobot** is a **local-first** agent that runs entirely on your machine:
 
-* **Chat + tools** (YouTube transcript/summary, PDF ingest)
-* **Retrieval** (local KB with BM25 search)
-* **Memory** (global + per-session)
-* **Channels**: CLI + Telegram
-* **Local LLM via Ollama**
+* 🧠 **Local LLM** via **Ollama**
+* 🧭 **Router + Orchestrator** (deterministic routing, minimal prompts)
+* 🛠️ **Tooling** (YouTube transcript/summary, retrieval KB, sandboxed file/web/python, podcast generator)
+* 🔎 **Retrieval** (local KB, BM25)
+* 📝 **Memory** (global + per-session)
+* 🎙️ **Audio**: STT (**whisper.cpp**) + TTS (**piper** / optional qwen_tts)
+* 💬 **Channels**: CLI + Telegram (shared command surface)
 
-Designed to be hackable, testable, and pleasant to run from a terminal.
+The design goal: **lightweight, deterministic, hackable**, and friendly to run from a terminal.
 
 ---
 
-## Features
+## Why picobot
 
-### 🧭 Agent orchestration
+Most “agents” assume cloud APIs, complex orchestration frameworks, and non-deterministic behavior.
 
-* Routes each user message to either:
+picobot is intentionally different:
 
-  * **Chat** (LLM answer)
-  * **Tool** (e.g., YouTube transcript/summary, PDF ingestion)
-  * **KB query** (when asking about already-ingested docs)
-* Keeps a **session history** and can maintain a **rolling session summary**.
+* ✅ **Local-only**: no cloud APIs required
+* ✅ **Deterministic** routing (router produces a single JSON line)
+* ✅ **Tools are sandboxed** (subprocess runner with allowlist + timeouts)
+* ✅ **Errors never leak to Telegram** (details only on terminal)
+* ✅ **Minimal prompts** and predictable turn flow
 
-### 🔎 Local retrieval (KB)
+---
 
-* Ingest PDFs into a local knowledge base.
-* Query the KB (BM25-based) to answer doc-specific questions.
-* Supports per-chat KB isolation in Telegram (recommended).
+## High-level architecture
 
-### 🧠 Memory
+### Core loop
 
-* Global `MEMORY` + session memory.
-* “Remember keyword …” workflows (and recall).
+Each message goes through a tight pipeline:
 
-### 🛠 Tools
+1. **Language resolution** (rule-based, no LLM)
+2. **Router** decides: `chat` or `tool` (or `kb_query` mapped to tool)
+3. **Orchestrator** executes one full turn:
 
-* **YouTube transcript** via `yt-dlp` subtitles:
+   * memory updates / recall
+   * tool execution (if any)
+   * retrieval (if enabled)
+   * final response (target: short, 6–8 sentences)
+4. **UI** renders output
 
-  * Prefers auto-subs, defaults to **English** to reduce rate limits.
-  * Robust to partial failures (e.g., HTTP 429 on one language) if at least one VTT is available.
-* **YouTube summary**: transcript → LLM summary
-* **PDF ingest tool**: chunk + store into KB
+### Key modules
 
-### 💬 Telegram channel
+* `picobot/agent/router.py` → deterministic routing → **one-line JSON**
+* `picobot/agent/orchestrator.py` → executes a full turn
+* `picobot/agent/memory.py` → memory store + injection helpers
+* `picobot/tools/*` → tools with a **standard result contract**
+* `picobot/tools/terminal_tool.py` + `sandbox_exec.py` → sandboxed subprocess execution
+* `picobot/retrieval/*` → local KB ingest + BM25 search
+* `picobot/channels/*` → CLI + Telegram adapters
+* `picobot/ui.py` → unified UI surface + shared commands/autocomplete
 
-* Text messages → agent
-* PDF documents → auto ingest into KB (dedup supported)
-* Voice/audio → optional **STT pipeline**:
+---
 
-  * download → ffmpeg convert → whisper.cpp → agent
-* Command parity with CLI via shared command dispatcher.
+## Tool contract
+
+Every tool returns the same shape:
+
+```json
+{
+  "ok": true,
+  "data": {"...": "..."},
+  "error": null,
+  "language": "it"
+}
+```
+
+Rules:
+
+* Tools **never** print to Telegram
+* Tools do not embed complex agent logic
+* Tool errors are logged in terminal; user-facing channel response stays short and safe
+
+---
+
+## Sandboxed terminal execution
+
+Any tool that runs external binaries must go through the sandboxed runner:
+
+* `picobot/tools/sandbox_exec.py` → allowlist + timeout + output caps
+* `picobot/tools/terminal_tool.py` → shared base helpers + terminal-only logging
+
+This is used by (and intended for):
+
+* `yt-dlp` (YouTube transcript/summary)
+* `ffmpeg`
+* `whisper.cpp`
+* `piper`
+* future “terminal tools”
 
 ---
 
 ## Repository layout
 
-```
+```txt
 picobot/
-  agent/        Orchestrator, router, memory
-  bus/          Simple event queue
-  channels/     CLI/Telegram adapters
+  agent/        router + orchestrator + prompts + memory
+  bus/          lightweight event queue (if/when needed)
+  channels/     CLI + Telegram adapters
   cli/          CLI entrypoints
-  config/       Config schema + loader + template
-  providers/    LLM providers (Ollama)
-  retrieval/    KB ingest + store + BM25
-  session/      Session manager
-  tools/        Tool specs + registry + init-tools installers
-  ui/           Console UI + shared commands
-  utils/        Helpers
+  config/       schema + loader + template
+  providers/    local LLM providers (Ollama)
+  retrieval/    KB ingest + BM25 store/query
+  session/      session manager + state
+  tools/        tool specs + sandbox tools + youtube + podcast
+  ui.py         unified UI + shared commands/autocomplete
+  utils/        helpers
 
-tests/          Pytest suite
+tests/          pytest suite
 ```
 
 ---
@@ -79,13 +120,13 @@ tests/          Pytest suite
 
 * Python **3.12+**
 * `make`
-* **Ollama** (for local LLM)
-* Optional binaries (auto-installed by `make init-tools` if configured):
+* **Ollama** (local LLM)
+* Optional local binaries (often installed via `make init-tools` depending on your setup):
 
   * `yt-dlp`
   * `ffmpeg`
-  * `whisper.cpp` (plus model)
-  * `piper` (TTS)
+  * `whisper.cpp` + model
+  * `piper` + voice models
 
 ---
 
@@ -99,94 +140,56 @@ source .venv/bin/activate
 make dev
 ```
 
-### 2) Initialize config + tools
+### 2) Initialize workspace + config
 
 ```bash
 make init
+cp picobot/config/config.template.json .picobot/config.json
+```
+
+### 3) (Optional) Install tool bundles
+
+```bash
 make init-tools
 ```
 
-This creates a `.picobot/` workspace (ignored by git) and downloads tool bundles/models into `.picobot/tools/`.
-
 ---
 
-## Ollama setup (local LLM)
-
-### Install Ollama
-
-* Linux/macOS: install via the official instructions.
-* Ensure `ollama` is running:
+## Ollama setup
 
 ```bash
-ollama --version
-ollama serve
-```
-
-### Pull models
-
-Pick a chat model and (optionally) an embedding model.
-
-Examples:
-
-```bash
-# chat model
+curl -fsSL https://ollama.com/install.sh | sh
 ollama pull qwen2.5:3b-instruct-q4_0
-
-# alternative chat model
-ollama pull qwen2.5:3b
-
-# embeddings (if you later wire them in)
-ollama pull nomic-embed-text
 ```
 
-Then point your `config.json` to the model name you pulled (see below).
+Then ensure your `.picobot/config.json` points to the same model name.
 
 ---
 
 ## Configuration
 
-Start from the template:
+Start from:
 
 * `picobot/config/config.template.json`
 
-You’ll typically copy it into `.picobot/config.json`:
-
-```bash
-cp picobot/config/config.template.json .picobot/config.json
-```
-
-### Tool paths (typical)
-
-```json
-{
-  "tools": {
-    "base_dir": ".picobot/tools",
-    "whisper_cpp_dir": ".picobot/tools/whisper.cpp",
-    "whisper_cpp_main_path": ".picobot/tools/whisper.cpp/build/bin/whisper-cli",
-    "whisper_model": ".picobot/tools/whisper.cpp/models/ggml-small.bin",
-
-    "ytdlp_bin": ".picobot/tools/yt-dlp/bin/yt-dlp",
-    "ytdlp_args": ["--js-runtimes", "node:/usr/bin/node"],
-
-    "ffmpeg_bin": ".picobot/tools/ffmpeg/bin/ffmpeg",
-
-    "piper_bin": ".picobot/tools/piper/bin/piper",
-    "piper_model_it": ".picobot/tools/piper/models/it_IT-paola-medium.onnx",
-    "piper_model_en": ".picobot/tools/piper/models/en_US-lessac-medium.onnx"
-  }
-}
-```
-
 Notes:
 
-* `whisper_cpp_main_path` is needed if your build does not place a `main` binary at the project root.
-* `ytdlp_args` may be optional depending on your `yt-dlp` version and environment.
+* The schema is **legacy-friendly**: both old flat keys and new structured keys are accepted.
+* Tool binaries and models can be configured via `tools.*`.
+
+Key sections you’ll likely touch:
+
+* `ollama` → local LLM model + timeout
+* `retrieval` → enable/disable KB and retrieval parameters
+* `tools` → local tool binary paths and YouTube args
+* `podcast` → voices, triggers, output format
+* `telegram` → bot token + channel behavior
 
 ---
 
 ## Quickstart
 
-### CLI chat
+### CLI
 
 ```bash
 make chat
@@ -194,223 +197,167 @@ make chat
 
 Try:
 
-* `summarize this youtube video: https://www.youtube.com/watch?v=ssYt09bCgUY&t=6s`
-* `ingest pdf /path/to/file.pdf`
-* Ask a question about the document you ingested.
+* `ping`
+* `remember paprika`
+* `what did i ask you to remember?`
+* Paste a YouTube URL
+* `/kb set demo` → `/kb ingest` → ask a question about your docs
+* `/py print(2+2)`
+* `/file preview ./docs/demo/source/test.txt`
+* `/podcast it calabria e tradizioni`
 
-### Telegram bot
+### Telegram
 
-1. Create a bot via **@BotFather** and copy the token.
-2. Put it in `.picobot/config.json` under `telegram.bot_token`.
+1. Create a bot with **@BotFather**
+2. Put token into `.picobot/config.json` → `telegram.bot_token`
 3. Run:
 
 ```bash
 make telegram
 ```
 
-Telegram behaviors:
+Telegram behavior:
 
-* Text → agent response
-* PDF → auto-ingest (dedup)
-* Voice/audio → STT (if enabled)
-
-Useful Telegram commands:
-
-* `/help`
-* `/session` (show)
-* `/session list`
-* `/session set <id>`
+* Text → agent
+* PDF → optional auto-ingest into KB
+* Voice/audio → optional STT pipeline
 
 ---
 
-## How the tool flow works
+## How routing works
 
-### High-level pipeline
+The router is intentionally small:
 
-1. **Router** inspects user input:
+* decides **only**: `chat` or `tool` (+ tool name + args)
+* emits **single-line JSON**
+* no tool calls, no complex parsing, no business logic
 
-   * very short → chat
-   * YouTube URL → tool (yt_summary / yt_transcript)
-   * PDF ingest request → tool (kb_ingest_pdf)
-   * doc question → KB query
+The orchestrator:
 
-2. **Orchestrator** executes the selected path:
+* resolves language
+* applies deterministic shortcuts (`ping`, `remember`)
+* calls router
+* executes tools/retrieval when needed
+* calls LLM for final response
 
-   * calls the tool handler
-   * or calls the provider (Ollama)
-   * optionally fetches retrieval hits
-   * merges memory + session summary into context
-
-3. **TurnResult** is emitted:
-
-   * `action`: chat / tool / kb_query
-   * `content`: final text
-   * `kb_mode`: keep/auto
-
-### YouTube summary path
-
-* `yt_summary` → calls `yt_transcript` → fetches `.vtt` subtitles via `yt-dlp` → cleans VTT → passes transcript to LLM summarizer.
-
-Robustness notes:
-
-* Uses auto-subs first.
-* Defaults to English languages to reduce HTTP 429.
-* Considers success when at least one `.vtt` is present, even if a subset of requested languages fails.
-
-### PDF ingestion path
-
-* Telegram/CLI triggers `kb_ingest_pdf` tool
-* PDF → chunking → store in local KB
-* Later questions route to `kb_query` for retrieval + answer synthesis.
+**KB auto-routing is opt-in** (recommended): you can enable it explicitly via session/UI commands so normal questions don’t accidentally hit retrieval.
 
 ---
 
-## Makefile commands
+## YouTube tool
+
+Pipeline:
+
+1. `yt_transcript` uses `yt-dlp` to download subtitles (auto subs included)
+2. transcripts are cleaned (VTT/SRT → plain text)
+3. `yt_summary` summarizes transcript via local LLM
+
+Sandboxed:
+
+* `yt-dlp` is executed via `TerminalToolBase` (allowlist + timeout + output caps)
+
+Common issues:
+
+* **HTTP 429**: YouTube rate limit → retry later / reduce languages / use cookies (advanced)
+* **JS runtime warnings**: configure `--js-runtimes` (node/deno)
+
+---
+
+## Podcast generator
+
+Config-driven triggers (IT/EN) generate a short podcast:
+
+* Pure dialogue format:
+
+  * `NARRATOR:`
+  * `EXPERT:`
+* Two voices required
+* Duration defaults to 1 minute, hard cap 2 minutes
+* Output: mp3/ogg (config)
+
+---
+
+## KB (retrieval)
+
+* Ingest documents into a named KB
+* Query using BM25
+* Orchestrator uses retrieval context to answer
+
+Useful CLI commands:
+
+* `/kb set <name>`
+* `/kb status`
+* `/kb ingest`
+* `/kb on` / `/kb off` (behavior depends on your UI implementation)
+
+---
+
+## Development
+
+### Lint / tests
 
 ```bash
-make dev         # install with dev extras
-make test        # run pytest
-make lint        # ruff check
+ruff check .
+pytest -q
+```
+
+### Makefile
+
+```bash
+make dev         # install dev deps
+make test        # pytest
+make lint        # ruff
 make fmt         # ruff format
 make init        # create workspace/config
 make init-tools  # download/verify external tool bundles
-make chat        # run CLI
-make telegram    # run Telegram bot
+make chat        # CLI
+make telegram    # Telegram bot
 ```
 
 ---
 
-## Tests (what each one covers)
+## Next steps (roadmap)
 
-All tests live under `tests/` and are designed to validate routing, tools, retrieval, memory, and channels.
+### 1) Finalize the agent structure
 
-### `tests/conftest.py`
+* Make the router contract fully explicit in tests (tool args schemas + deterministic output)
+* Tighten orchestrator response policy (max sentences, consistent formatting)
+* Add explicit “tool rendering” layer (per tool name)
 
-Shared pytest fixtures and helpers used across the suite.
+### 2) Expand terminal-based tools
 
-### `tests/test_router.py`
+* Whisper pipeline tool (audio → wav → whisper.cpp → text)
+* ffmpeg helper tool (safe audio/video transforms)
+* YouTube fallback: bestaudio → whisper (when subtitles missing)
 
-Validates the router’s decision-making:
+### 3) Automatic sub-agents (local)
 
-* Detects YouTube URLs and routes to tool.
-* Routes short messages to chat.
-* Routes doc questions to KB query when index is present.
+Introduce a **sub-agent generation** workflow (still local-first):
 
-### `tests/test_tools_routing.py`
+* A small “agent spec” format (JSON/YAML)
+* Codegen for:
 
-Ensures end-to-end routing triggers the correct tool name for tool-like prompts.
+  * prompt pack entries
+  * router tool signatures
+  * tool scaffolding
+  * tests
 
-### `tests/test_tool_validation.py`
+Goal: adding a new tool should feel like:
 
-Checks tool schema validation:
+* define schema + contract
+* implement handler
+* register tool
+* get e2e tests for free
 
-* correct argument parsing
-* invalid inputs rejected with clear errors
+### 4) Better caching + reproducibility
 
-### `tests/test_tools_execution.py`
-
-Runs a tool-path turn through the orchestrator while stubbing external dependencies:
-
-* monkeypatch transcript handler to avoid network
-* confirms `yt_summary` produces the expected success marker
-
-### `tests/test_ingest_and_search.py`
-
-Exercises retrieval ingestion + search:
-
-* ingest a small sample doc
-* verify stored chunks
-* verify BM25 returns relevant hits
-
-### `tests/test_retrieval_guardrails.py`
-
-Validates retrieval guardrails:
-
-* behavior when KB is empty
-* behavior when retrieval is disabled
-* ensures the agent doesn’t hallucinate “indexed docs”
-
-### `tests/test_memory_injection.py`
-
-Checks that memory is correctly injected into prompt context for the LLM.
-
-### `tests/test_memory_recall_general.py`
-
-Validates the “remember / recall” flow and that prior memory is retrievable.
-
-### `tests/test_session.py`
-
-Ensures SessionManager behavior:
-
-* create/get sessions
-* persistence/serialization of session state
-* session summaries or turn history basics
-
-### `tests/test_debug_router_dump.py`
-
-Checks debug output / dump behavior (routing visibility) when debug flags are enabled.
-
-### `tests/test_e2e_flow.py`
-
-A higher-level smoke test:
-
-* exercises a realistic multi-turn flow
-* checks that a turn returns a structured result
-
-### `tests/test_telegram_mock.py`
-
-Unit test for Telegram channel behavior using mocks:
-
-* ensures message handlers call orchestrator
-* checks session mapping from chat_id
-
-### `tests/test_telegram_automations.py`
-
-Validates Telegram automations:
-
-* PDF auto-ingest triggers KB ingest tool
-* dedup map prevents repeated ingest
-* voice/audio STT routing when enabled
+* Cache YouTube transcripts by video ID
+* Cache retrieval index builds
+* Add deterministic fixtures for tool outputs
 
 ---
 
-## Troubleshooting
+## License
 
-### YouTube: HTTP 429 Too Many Requests
-
-* Reduce requested languages (default EN is safest)
-* Retry later
-* Consider using cookies or a proxy (advanced)
-
-### YouTube: JavaScript runtime warnings
-
-Some `yt-dlp` versions warn about missing JS runtime. If extraction fails, configure:
-
-```json
-"ytdlp_args": ["--js-runtimes", "node:/usr/bin/node"]
-```
-
-### whisper.cpp: main not found
-
-Set:
-
-```json
-"whisper_cpp_main_path": ".picobot/tools/whisper.cpp/build/bin/whisper-cli"
-```
-
-### Piper: missing shared libraries
-
-Ensure the wrapper uses bundled libs. `make init-tools` should generate a working wrapper in:
-
-* `.picobot/tools/piper/bin/piper`
-
----
-
-## Roadmap ideas
-
-* Telegram: richer command set (memory/kb inspection)
-* Audio fallback when subtitles are unavailable (yt-dlp → bestaudio → whisper)
-* Better caching for YouTube transcripts
-* More tool adapters (calendar/email/etc.)
-
+(TODO)
 

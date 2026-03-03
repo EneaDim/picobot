@@ -26,7 +26,7 @@ from picobot.agent.prompts import detect_language
 from picobot.config.schema import Config
 from picobot.session.manager import SessionManager, sanitize_session_id
 from picobot.tools.retrieval import make_kb_ingest_pdf_tool
-from picobot.ui.commands import handle_command
+from picobot.ui import handle_command
 
 
 @dataclass
@@ -114,6 +114,37 @@ async def _run_subprocess(cmd: list[str], timeout_s: float) -> tuple[int, str, s
 
 
 class TelegramChannel:
+
+    async def _maybe_set_commands(self):
+        """Best-effort Telegram command suggestions (/). Never crash."""
+        try:
+            cmds = [
+                ("help", "Show help"),
+                ("ping", "Health check"),
+                ("session", "Show / switch session"),
+                ("new", "Create new session"),
+                ("memory", "Memory ops (use: /memory clear)"),
+                ("podcast", "Generate a podcast (topic after command)"),
+                ("exit", "Close the chat (CLI only)"),
+            ]
+            bot = getattr(self, "bot", None) or getattr(getattr(self, "app", None), "bot", None)
+            if bot is None:
+                return
+            set_cmds = getattr(bot, "set_my_commands", None)
+            if not callable(set_cmds):
+                return
+            # support both tuple-list and BotCommand-like objects
+            try:
+                await set_cmds(cmds)
+            except Exception:
+                # python-telegram-bot prefers list[BotCommand]
+                try:
+                    from telegram import BotCommand  # type: ignore
+                    await set_cmds([BotCommand(c, d) for c, d in cmds])
+                except Exception:
+                    return
+        except Exception:
+            return
     def __init__(self, cfg: Config, sm: SessionManager, orch: Orchestrator, build_app: bool = True) -> None:
         self.cfg = cfg
         self.sm = sm

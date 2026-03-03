@@ -10,6 +10,26 @@ class ToolError(Exception):
     pass
 
 
+def tool_ok(data: dict | None = None, language: str | None = None) -> dict:
+    """Standard tool contract wrapper."""
+    return {
+        "ok": True,
+        "data": data or {},
+        "error": None,
+        "language": language,
+    }
+
+
+def tool_error(message: str, language: str | None = None, data: dict | None = None) -> dict:
+    """Standard tool contract wrapper."""
+    return {
+        "ok": False,
+        "data": data or {},
+        "error": (message or "error"),
+        "language": language,
+    }
+
+
 TArgs = TypeVar("TArgs", bound=BaseModel)
 
 

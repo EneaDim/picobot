@@ -44,10 +44,20 @@ class FakeKBStore:
     def read_chunk(self, cid: str) -> str:
         return self._chunks.get(cid, "")
 
+    def search(self, query: str, top_k: int = 5):
+        idx = self.load_index()
+        if not idx:
+            return []
+        scored = sorted(idx.score(query), key=lambda x: x[1], reverse=True)
+        out = []
+        for cid, s in scored[:top_k]:
+            out.append({"chunk_id": cid, "score": float(s), "text": self.read_chunk(cid)})
+        return out
+
 
 @pytest.mark.asyncio
 async def test_e2e_kb_query_appends_quote_when_hits(tmp_path: Path, monkeypatch):
-    import picobot.agent.orchestrator as orch_mod
+    import picobot.tools.retrieval as tool_mod
 
     cfg = Config(workspace=str(tmp_path))
     cfg.retrieval.enabled = True
@@ -62,12 +72,11 @@ async def test_e2e_kb_query_appends_quote_when_hits(tmp_path: Path, monkeypatch)
     }
     index = FakeIndex(mapping={"verilator": [("c1", 10.0), ("c2", 7.0)]})
 
-    monkeypatch.setattr(orch_mod, "KBStore", lambda root: FakeKBStore(root, index=index, chunks=chunks))
+    monkeypatch.setattr(tool_mod, "KBStore", lambda root: FakeKBStore(root, index=index, chunks=chunks))
 
     provider = FixedProvider("Verilator --trace enables waveform dumps.")
     orch = Orchestrator(cfg, provider, tmp_path)
 
-    # ensure kb_name is set so kb_dir resolves
     s.set_state({"kb_name": "verilator"})
 
     r = await orch.one_turn(s, "Nel doc verilator dove si parla di --trace? Riporta anche una breve citazione.", status=None)
@@ -79,7 +88,7 @@ async def test_e2e_kb_query_appends_quote_when_hits(tmp_path: Path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_e2e_kb_followup_sticks_to_kb_query(tmp_path: Path, monkeypatch):
-    import picobot.agent.orchestrator as orch_mod
+    import picobot.tools.retrieval as tool_mod
 
     cfg = Config(workspace=str(tmp_path))
     cfg.retrieval.enabled = True
@@ -91,7 +100,7 @@ async def test_e2e_kb_followup_sticks_to_kb_query(tmp_path: Path, monkeypatch):
 
     chunks = {"c1": "Trace formats: VCD is supported.\n"}
     index = FakeIndex(mapping={"trace": [("c1", 10.0)], "formats": [("c1", 9.0)]})
-    monkeypatch.setattr(orch_mod, "KBStore", lambda root: FakeKBStore(root, index=index, chunks=chunks))
+    monkeypatch.setattr(tool_mod, "KBStore", lambda root: FakeKBStore(root, index=index, chunks=chunks))
 
     provider = FixedProvider("Answer from docs.")
     orch = Orchestrator(cfg, provider, tmp_path)
@@ -106,7 +115,7 @@ async def test_e2e_kb_followup_sticks_to_kb_query(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_e2e_kb_no_index_never_quotes(tmp_path: Path, monkeypatch):
-    import picobot.agent.orchestrator as orch_mod
+    import picobot.tools.retrieval as tool_mod
 
     cfg = Config(workspace=str(tmp_path))
     cfg.retrieval.enabled = True
@@ -115,12 +124,12 @@ async def test_e2e_kb_no_index_never_quotes(tmp_path: Path, monkeypatch):
     s = sm.get("s1")
     s.set_state({"kb_name": "default"})
 
-    monkeypatch.setattr(orch_mod, "KBStore", lambda root: FakeKBStore(root, index=None, chunks={}))
+    monkeypatch.setattr(tool_mod, "KBStore", lambda root: FakeKBStore(root, index=None, chunks={}))
 
     provider = FixedProvider("SHOULD NOT MATTER")
     orch = Orchestrator(cfg, provider, tmp_path)
 
-    r = await orch.one_turn(s, "Nel doc verilator dove si parla di --trace?", status=None)
+    r = await orch.one_turn(s, "pdf formats", status=None)
     assert r.action == "kb_query"
     assert r.retrieval_hits == 0
     assert "\n> \"" not in r.content
