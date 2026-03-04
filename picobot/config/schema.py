@@ -212,9 +212,11 @@ class RetrievalConfig(BaseModel):
 
 
 class WebConfig(BaseModel):
+    # Web SEARCH (local engine, e.g. SearXNG)
     enabled: bool = False
-    allowlist: list[str] = Field(default_factory=list)
-    timeout_s: float = 8.0
+    searxng_url: str = "http://localhost:8080"
+    timeout_s: float = 10.0
+    max_results: int = 5
 
 
 class PodcastTriggers(BaseModel):

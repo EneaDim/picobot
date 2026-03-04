@@ -173,6 +173,7 @@ def make_readline(workspace: Path, opts: ConsoleOptions) -> Callable[[str], str]
     commands = [
         "/help", "/h",
         "/ping",
+        "/wsearch",
         "/exit", "/quit",
         "/session", "/session list", "/session set",
         "/new",

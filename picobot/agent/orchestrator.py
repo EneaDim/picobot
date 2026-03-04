@@ -28,6 +28,7 @@ from picobot.tools.sandbox_file import make_sandbox_file_tool
 from picobot.tools.sandbox_python import make_sandbox_python_tool
 from picobot.tools.sandbox_web import make_sandbox_web_tool
 from picobot.tools.youtube import make_yt_summary_tool, make_yt_transcript_tool
+from picobot.tools.web_search import make_web_search_tool
 
 StatusCb = Callable[[str], Awaitable[None]]
 
@@ -217,6 +218,7 @@ class Orchestrator:
             make_sandbox_web_tool(),
             make_sandbox_file_tool(),
             make_sandbox_python_tool(),
+                    make_web_search_tool(self.cfg),
         ]:
             try:
                 self.tools.register(tool)

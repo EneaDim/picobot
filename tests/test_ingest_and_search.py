@@ -9,11 +9,9 @@ from picobot.config.schema import Config
 from picobot.session.manager import SessionManager
 from picobot.agent.orchestrator import Orchestrator
 
-
 def dbg(*a, **k):
     # print(*a, **k)
     pass
-
 
 class DummyProvider:
     async def chat(self, messages, tools=None, max_tokens=0, temperature=0.0):

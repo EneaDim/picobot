@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import asyncio
 import json
 import shutil
@@ -21,6 +22,24 @@ from picobot.utils.helpers import workspace_path
 app = typer.Typer(add_completion=False)
 
 
+def _rewrite_slash_commands(line: str) -> str:
+    """
+    Deterministic CLI slash commands that map to explicit tool lines.
+    Keeps router simple and tool args valid.
+    """
+    t = (line or "").strip()
+    if not t.startswith("/"):
+        return line
+
+    # /wsearch <query>  -> tool web_search {"query": "...", "count": 5}
+    if t.startswith("/wsearch"):
+        q = t[len("/wsearch"):].strip()
+        if not q:
+            return line
+        payload = {"query": q, "count": 5}
+        return "tool web_search " + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    return line
 def _print_banner(ui: ConsoleUI) -> None:
     ui.send_text("🤖 picobot")
     ui.send_text("  🔎 Retrieval (local KB)")
@@ -107,6 +126,7 @@ def chat(session: str = typer.Option("default", "--session", "-s")) -> None:
     while True:
         try:
             user = read_line("You:").strip()
+            user = _rewrite_slash_commands(user)
         except (EOFError, KeyboardInterrupt):
             ui.send_text("\n/exit")
             ui.send_text("bye 👋")
