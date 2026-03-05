@@ -1,0 +1,5 @@
+# Picobot / SearXNG minimal config
+search:
+  formats:
+    - html
+    - json

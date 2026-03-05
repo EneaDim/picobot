@@ -306,6 +306,30 @@ def handle_command(
 
     parts = t.split(None, 2)
     cmd = parts[0].lower()
+
+    # --- dev: inspect router scores (bm25 vs vector) ---
+    if cmd == "/route":
+        q = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+        if not q:
+            return CommandResult(handled=True, reply="Usage: /route <text>")
+        try:
+            from picobot.agent.router import debug_scores
+            d = debug_scores(q)
+        except Exception as e:
+            return CommandResult(handled=True, reply=f"/route error: {e}")
+        if not d.get("ok"):
+            return CommandResult(handled=True, reply=str(d.get("error") or "error"))
+        lines = ["Top routes (bm25 vs vec vs score):"]
+        for row in d["top"]:
+            lines.append(f"- {row['workflow']} tool={row['tool']} score={row['score']} (bm25={row['bm25']}, vec={row['vec']}) src={row['source']}")
+        return CommandResult(handled=True, reply="\n".join(lines))
+    if cmd == "/news":
+        q = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+        if not q:
+            return CommandResult(handled=True, reply="Usage: /news <query>")
+        payload = {"query": q}
+        return CommandResult(handled=False, rewrite_text="tool news_digest " + json.dumps(payload, ensure_ascii=False))
+
     arg1 = parts[1] if len(parts) >= 2 else ""
     argrest = t[len(parts[0]) :].strip() if len(parts) >= 2 else ""
 
