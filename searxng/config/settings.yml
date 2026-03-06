@@ -1,5 +1,26 @@
-# Picobot / SearXNG minimal config
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "Picobot SearXNG"
+
 search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "it"
   formats:
     - html
     - json
+
+server:
+  secret_key: "picobot-local-dev-secret-key-change-me"
+  limiter: false
+  image_proxy: false
+
+ui:
+  static_use_hash: true
+
+enabled_plugins:
+  - 'Hash plugin'
+  - 'Self Information'
+  - 'Tracker URL remover'

@@ -1,35 +1,32 @@
+---
+id: workflow:youtube_summarizer
+kind: workflow
+name: youtube_summarizer
+title: YouTube Summarizer
+description: Riassume un video YouTube usando transcript o metadata e produce una sintesi strutturata.
+capabilities:
+  - youtube transcript
+  - video summary
+  - captions extraction
+limitations:
+  - dipende da transcript o metadata disponibili
+tags:
+  - youtube
+  - video
+  - transcript
+  - summary
+example_queries:
+  - riassumi questo video https://www.youtube.com/watch?v=ssYt09bCgUY
+  - fammi il riassunto del video youtube https://youtu.be/ssYt09bCgUY
+  - get transcript and summarize it
+  - key takeaways from this youtube video https://youtu.be/ssYt09bCgUY
+requires_kb: false
+requires_network: false
+enabled: true
+priority: 95
+---
+
 # youtube_summarizer
 
-## Intent
-Riassumere contenuti YouTube:
-- ottenere transcript/sottotitoli (yt-dlp)
-- riassumere (summarizer agent)
-- fallback su metadata se captions non disponibili
-
-## Strong signals
-- URL youtube.com / youtu.be
-- parole: “youtube”, “video”, “riassumi il video”, “summary of this video”
-- frasi “sporche” con URL in mezzo (molto comune)
-
-## Italiano: esempi realistici
-- riassumi questo video: https://www.youtube.com/watch?v=ssYt09bCgUY
-- fammi il riassunto del video youtube https://youtu.be/ssYt09bCgUY
-- puoi estrarre il transcript e riassumerlo?
-- mi fai i punti chiave + takeaway?
-- voglio una sintesi in italiano, bullet points
-- trova i sottotitoli e poi fammi un summary
-
-## English: examples
-- summarize this video https://www.youtube.com/watch?v=ssYt09bCgUY
-- get transcript and summarize it
-- key takeaways from this YouTube video: https://youtu.be/ssYt09bCgUY
-- summarize in bullet points
-
-## Edge cases
-- link con testo davanti: "summarize this youtube video: https://..."
-- link con parentesi o punteggiatura: "(https://youtu.be/...)"
-- url non valido/troncato: watch?v=abc (dovrebbe comunque tentare di estrarre url, poi fallback/errore gestito)
-
-## Negative examples
-- news digest (notizie/attualità)
-- kb_query su documenti locali
+Workflow specifico per YouTube. La presenza di un URL YouTube è un forte
+segnale esplicito e deve vincere facilmente nel routing.

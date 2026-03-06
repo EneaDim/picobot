@@ -2,532 +2,494 @@ from __future__ import annotations
 
 import json
 import re
-import sys
-import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from picobot.agent.memory import make_memory_manager
-from picobot.agent.prompts import (
-    PromptPack,
-    detect_language,
-    kb_user_prompt,
-    ping_reply,
-    system_base_context,
-)
-from picobot.agent.router import route_json_one_line
+from picobot.agent.prompts import detect_language, kb_user_prompt, system_base_context
+from picobot.agent.router import deterministic_route
 from picobot.config.schema import Config
-from picobot.providers.ollama import OllamaProvider, OllamaTimeout, OllamaProviderError
-from picobot.tools.registry import ToolRegistry
-from picobot.services.searxng import ensure_searxng_running
-from picobot.sandbox.runner import SandboxRunner
+from picobot.providers.ollama import OllamaProvider, OllamaProviderError, OllamaTimeout
+from picobot.session.manager import Session
+from picobot.tools.base import ToolError
+from picobot.tools.news_digest import NewsDigestArgs, make_news_digest_tool
 from picobot.tools.podcast import detect_podcast_request, generate_podcast
-
+from picobot.tools.registry import ToolRegistry
 from picobot.tools.retrieval import make_kb_ingest_pdf_tool, make_kb_query_tool
 from picobot.tools.sandbox_file import make_sandbox_file_tool
 from picobot.tools.sandbox_python import make_sandbox_python_tool
 from picobot.tools.sandbox_web import make_sandbox_web_tool
-from picobot.tools.youtube import make_yt_transcript_tool
+from picobot.tools.stt import make_stt_tool
+from picobot.tools.tts import make_tts_tool
 from picobot.tools.web_search import make_web_search_tool
-from picobot.tools.news_digest import make_news_digest_tool
-
-from picobot.agent.agents import RetrieverAgent, SummarizerAgent
+from picobot.tools.youtube import YTSummaryArgs, make_yt_summary_tool, make_yt_transcript_tool
 
 StatusCb = Callable[[str], Awaitable[None]]
+_YT_RX = re.compile(r"(https?://\S*(youtube\.com|youtu\.be)\S*)", re.IGNORECASE)
 
-_URL_RX = re.compile(r"(https?://\S+)")
 
-def _extract_first_url(text: str) -> str | None:
-    m = _URL_RX.search(text or "")
-    if not m:
+def _first_youtube_url(text: str) -> str | None:
+    match = _YT_RX.search(text or "")
+    if not match:
         return None
-    return m.group(1).strip().strip(").,]}>\"'")
+    return match.group(1).strip()
 
 
-def _print_terminal_error(prefix: str, e: Exception) -> None:
-    try:
-        print(f"{prefix} {e!r}", file=sys.stderr)
-        traceback.print_exc()
-    except Exception:
-        pass
-
-
-@dataclass
+@dataclass(slots=True)
 class TurnResult:
     content: str
     action: str
-    kb_mode: str
     reason: str
+    score: float = 0.0
     retrieval_hits: int = 0
     audio_path: str | None = None
     script: str | None = None
 
 
 class Orchestrator:
-    """
-    Orchestrator pulito e testabile:
-    - routing via router (BM25+vector)
-    - workflow per feature
-    - tools sempre via ToolRegistry
-    - memory compat via make_memory_manager
-    """
-
     def __init__(self, cfg: Config, provider: OllamaProvider, workspace: Path) -> None:
         self.cfg = cfg
         self.provider = provider
-        self.workspace = Path(workspace)
+        self.workspace = Path(workspace).expanduser().resolve()
         self.docs_root = self.workspace / "docs"
         self.docs_root.mkdir(parents=True, exist_ok=True)
         self.tools = ToolRegistry()
+        self._register_tools()
 
-        import os
-        os.environ.setdefault("PICOBOT_SANDBOX_ROOT", str(self.workspace / "sandbox_runs"))
-        self._bootstrap_on_start()
-
-    def _ensure_tools(self) -> None:
+    def _register_tools(self) -> None:
         if self.tools.list():
             return
 
-        ytdlp_bin = getattr(self.cfg.tools, "ytdlp_bin", "") if hasattr(self.cfg, "tools") else ""
-        ytdlp_args = getattr(self.cfg.tools, "ytdlp_args", None) if hasattr(self.cfg, "tools") else None
-        ytdlp_args = ytdlp_args or []
+        ytdlp_bin = str(getattr(self.cfg.tools, "ytdlp_bin", "") or "")
+        ytdlp_args = list(getattr(self.cfg.tools, "ytdlp_args", []) or [])
 
-        for tool in [
-            make_yt_transcript_tool(ytdlp_bin, ytdlp_args=ytdlp_args),
+        async def _llm_summarize(transcript: str, url: str, lang: str | None) -> str:
+            lan = detect_language(transcript or url, default=self.cfg.default_language)
+            sys_prompt = system_base_context(lan)
+            user_prompt = (
+                f"URL: {url}\n\n"
+                f"Please summarize the YouTube video transcript below in a structured way.\n\n"
+                f"Transcript:\n{transcript[:120000]}"
+            )
+            resp = await self.provider.chat(
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                tools=None,
+                max_tokens=900,
+                temperature=0.1,
+            )
+            return (resp.content or "").strip()
+
+        tool_specs = [
             make_kb_ingest_pdf_tool(self.docs_root),
             make_kb_query_tool(self.docs_root),
-            make_sandbox_web_tool(self.cfg),
-            make_sandbox_file_tool(),
             make_sandbox_python_tool(),
+            make_sandbox_file_tool(),
+            make_sandbox_web_tool(self.cfg),
             make_web_search_tool(self.cfg, self.workspace),
             make_news_digest_tool(self.cfg, self.workspace),
-        ]:
-            try:
-                self.tools.register(tool)
-            except Exception:
-                pass
+            make_yt_transcript_tool(ytdlp_bin, ytdlp_args=ytdlp_args),
+            make_yt_summary_tool(ytdlp_bin, _llm_summarize, ytdlp_args=ytdlp_args),
+            make_stt_tool(self.cfg),
+            make_tts_tool(self.cfg),
+        ]
 
-    # --------- memory helpers ---------
-    def _memory_context(self, mm) -> str:
+        for spec in tool_specs:
+            self.tools.register(spec)
+
+    def _memory_context(self, session: Session) -> str:
+        mm = make_memory_manager(self.cfg, session, self.workspace)
         mem = mm.read_memory().strip()
         summ = mm.read_summary().strip()
-        tail = mm.read_history_tail(self.cfg.memory_limits.tail_lines).strip()
+        hist = mm.read_history_tail(self.cfg.memory_limits.tail_lines).strip()
 
-        ctx = ""
+        parts: list[str] = []
         if mem and mem != "# Memory":
-            ctx += f"\nSESSION MEMORY:\n{mem}\n"
+            parts.append("SESSION MEMORY:\n" + mem)
         if summ and summ != "# Session Summary":
-            ctx += f"\nSESSION SUMMARY:\n{summ}\n"
-        if tail and tail != "# Session History":
-            ctx += f"\nRECENT HISTORY:\n{tail}\n"
-        return ctx
+            parts.append("SESSION SUMMARY:\n" + summ)
+        if hist and hist != "# Session History":
+            parts.append("RECENT HISTORY:\n" + hist)
 
+        return "\n\n".join(parts).strip()
 
-    def _bootstrap_on_start(self) -> None:
+    def _append_turn_memory(self, session: Session, user_text: str, assistant_text: str) -> None:
+        mm = make_memory_manager(self.cfg, session, self.workspace)
+        mm.init_files()
+        mm.append_turn("user", user_text)
+        mm.append_turn("assistant", assistant_text)
 
-        """Initialize sandbox + tools early so failures are visible immediately."""
+    async def _run_tool(self, tool_name: str, args: dict[str, Any]) -> dict:
+        resolved = self.tools.resolve_name(tool_name)
+        tool = self.tools.get(resolved)
+        model = tool.validate(args or {})
+        return await tool.handler(model)
 
-        # Ensure sandbox root exists
+    async def _run_explicit_tool(
+        self,
+        *,
+        lang: str,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> TurnResult:
+        try:
+            result = await self._run_tool(tool_name, args)
+        except KeyError:
+            return TurnResult(
+                content=(f"Tool sconosciuto: {tool_name}" if lang == "it" else f"Unknown tool: {tool_name}"),
+                action="tool",
+                reason="unknown tool",
+            )
+        except ToolError as e:
+            return TurnResult(
+                content=(f"Errore tool: {e}" if lang == "it" else f"Tool error: {e}"),
+                action="tool",
+                reason="tool validation error",
+            )
+        except Exception as e:
+            return TurnResult(
+                content=(f"Errore durante l'esecuzione del tool: {e}" if lang == "it" else f"Tool execution error: {e}"),
+                action="tool",
+                reason="tool execution error",
+            )
 
-        sandbox_root = self.workspace / "sandbox_runs"
+        if not isinstance(result, dict):
+            return TurnResult(
+                content=(f"Risposta tool non valida da {tool_name}" if lang == "it" else f"Invalid tool response from {tool_name}"),
+                action="tool",
+                reason="invalid tool response",
+            )
 
-        sandbox_root.mkdir(parents=True, exist_ok=True)
+        if not result.get("ok"):
+            err = str(result.get("error") or "tool failed")
+            return TurnResult(
+                content=(f"Tool fallito: {err}" if lang == "it" else f"Tool failed: {err}"),
+                action="tool",
+                reason="tool returned error",
+            )
 
-    
+        data = result.get("data") or {}
+        pretty = json.dumps(data, ensure_ascii=False, indent=2)
 
-        # Register tools early
+        return TurnResult(
+            content=pretty,
+            action="tool",
+            reason=f"tool:{tool_name}",
+            audio_path=str(data.get("audio_path") or "") or None,
+        )
 
-        self._ensure_tools()
+    async def _chat(self, *, session: Session, user_text: str, lang: str, status: StatusCb | None) -> TurnResult:
+        if status:
+            await status("💭 Sto pensando…")
 
-    
+        sys_prompt = system_base_context(lang)
+        mem_ctx = self._memory_context(session)
 
-        # Sandbox self-test: run a harmless python command via SandboxRunner
+        messages = [
+            {"role": "system", "content": sys_prompt + ("\n\n" + mem_ctx if mem_ctx else "")},
+            {"role": "user", "content": user_text},
+        ]
 
         try:
-
-            r = SandboxRunner(
-
-                allowed_bins=["python"],
-
-                sandbox_root=str(sandbox_root),
-
-                timeout_s=10,
-
-                max_output_bytes=50_000,
-
-            ).run(["python", "-c", "print('sandbox_ok')"])
-
-            res = r.to_exec_result()
-
-            if res.returncode != 0 or "sandbox_ok" not in (res.stdout or ""):
-
-                print("[bootstrap] sandbox self-test failed:", file=sys.stderr)
-
-                print(res.stderr or "", file=sys.stderr)
-
-        except Exception as e:
-
-            print(f"[bootstrap] sandbox self-test error: {e}", file=sys.stderr)
-
-
-    def _make_quote_from_context(self, context: str) -> str | None:
-        for ln in (context or "").splitlines():
-            ln = (ln or "").strip()
-            if not ln:
-                continue
-            if len(ln) > 220:
-                ln = ln[:220].rstrip() + "…"
-            ln = ln.replace('"', '\\"')
-            return f'\n\n> "{ln}"'
-        return None
-
-    # --------- KB pipeline ---------
-    async def _kb_query(self, session, question: str, lang: str, status: StatusCb | None) -> TurnResult:
-        retr = getattr(self.cfg, "retrieval", None)
-        if retr and getattr(retr, "enabled", True) is False:
-            return TurnResult(
-                content=("Retrieval disabilitata." if lang == "it" else "Retrieval disabled."),
-                action="kb_query",
-                kb_mode="keep",
-                reason="retrieval disabled",
-                retrieval_hits=0,
+            resp = await self.provider.chat(
+                messages=messages,
+                tools=None,
+                max_tokens=900,
+                temperature=0.2,
             )
+        except OllamaTimeout:
+            return TurnResult(
+                content=("⏱️ Il modello locale non ha risposto in tempo." if lang == "it" else "⏱️ The local model timed out."),
+                action="chat",
+                reason="ollama timeout",
+            )
+        except OllamaProviderError as e:
+            return TurnResult(
+                content=(f"⚠️ Errore Ollama: {e}" if lang == "it" else f"⚠️ Ollama error: {e}"),
+                action="chat",
+                reason="ollama error",
+            )
+
+        content = (resp.content or "").strip() or ("Nessuna risposta." if lang == "it" else "No response.")
+        return TurnResult(content=content, action="chat", reason="chat")
+
+    async def _workflow_kb_query(self, *, session: Session, user_text: str, lang: str, status: StatusCb | None) -> TurnResult:
+        kb_name = str(session.get_state().get("kb_name") or self.cfg.default_kb_name or "default").strip()
+        top_k = int(getattr(self.cfg.retrieval, "top_k", 4) or 4)
 
         if status:
-            await status("🔎 Searching KB…")
-
-        self._ensure_tools()
-        tool = self.tools.get("kb_query")
-        if not tool:
-            return TurnResult(
-                content=("Tool KB mancante." if lang == "it" else "KB tool missing."),
-                action="kb_query",
-                kb_mode="keep",
-                reason="kb tool missing",
-                retrieval_hits=0,
-            )
-
-        kb_name = getattr(session, "kb_name", None) or getattr(getattr(self.cfg, "retrieval", None), "default_kb", None) or "default"
-        top_k = int(getattr(getattr(self.cfg, "retrieval", None), "top_k", 4) or 4)
+            await status("🔎 Cerco nella knowledge base…")
 
         try:
-            model = tool.validate({"kb_name": kb_name, "query": question, "top_k": top_k})
-            res = await tool.handler(model)
+            tool_res = await self._run_tool(
+                "kb_query",
+                {"kb_name": kb_name, "query": user_text, "top_k": top_k},
+            )
         except Exception as e:
-            _print_terminal_error("[kb_query] ERROR:", e)
             return TurnResult(
-                content=("⚠️ Errore retrieval." if lang == "it" else "⚠️ Retrieval error."),
-                action="kb_query",
-                kb_mode="keep",
-                reason="kb error",
-                retrieval_hits=0,
+                content=(f"Errore retrieval: {e}" if lang == "it" else f"Retrieval error: {e}"),
+                action="workflow",
+                reason="kb tool execution error",
             )
 
-        if not isinstance(res, dict) or not res.get("ok"):
-            err = ""
-            try:
-                err = (res.get("error") or "").strip() if isinstance(res, dict) else ""
-            except Exception:
-                err = ""
-            msg = ("Non trovato nei documenti indicizzati." if lang == "it" else "Not found in indexed documents.")
-            if err:
-                msg += ("\nMotivo: " if lang == "it" else "\nReason: ") + err
-            return TurnResult(content=msg, action="kb_query", kb_mode="keep", reason="no hits", retrieval_hits=0)
+        if not tool_res.get("ok"):
+            err = str(tool_res.get("error") or "kb_query failed")
+            return TurnResult(
+                content=(f"KB query fallita: {err}" if lang == "it" else f"KB query failed: {err}"),
+                action="workflow",
+                reason="kb query failed",
+            )
 
-        data = res.get("data") or {}
-        context = (data.get("context") or "").strip()
+        data = tool_res.get("data") or {}
+        context = str(data.get("context") or "").strip()
         hits = int(data.get("hits") or 0)
 
-        if hits <= 0 or not context:
+        if not context or hits <= 0:
             return TurnResult(
-                content=("Non trovato nei documenti indicizzati." if lang == "it" else "Not found in indexed documents."),
-                action="kb_query",
-                kb_mode="keep",
-                reason="no hits",
+                content=("Non trovo abbastanza materiale rilevante nella KB attiva." if lang == "it" else "I could not find enough relevant material in the active KB."),
+                action="workflow",
+                reason="kb no hits",
                 retrieval_hits=0,
             )
 
         if status:
-            await status("💭 Thinking…")
+            await status("🧠 Sto preparando una risposta grounded…")
 
-        mm = make_memory_manager(self.cfg, session, self.workspace)
-        memory_context = self._memory_context(mm)
-        base_context = system_base_context(lang) + "\n"
+        mem_ctx = self._memory_context(session)
+        sys_prompt = system_base_context(lang)
 
         try:
             resp = await self.provider.chat(
                 messages=[
-                    {"role": "system", "content": base_context + memory_context},
-                    {"role": "user", "content": kb_user_prompt(lang=lang, question=question, context=context)},
+                    {"role": "system", "content": sys_prompt + ("\n\n" + mem_ctx if mem_ctx else "")},
+                    {"role": "user", "content": kb_user_prompt(lang=lang, question=user_text, context=context)},
                 ],
                 tools=None,
-                max_tokens=650,
+                max_tokens=900,
                 temperature=0.0,
             )
         except OllamaTimeout:
             return TurnResult(
-                content="⏱️ Local model timed out. Increase ollama.timeout_s.",
-                action="kb_query",
-                kb_mode="keep",
-                reason="ollama timeout",
+                content=("⏱️ Timeout del modello locale durante la risposta grounded." if lang == "it" else "⏱️ Local model timed out during grounded response."),
+                action="workflow",
+                reason="kb ollama timeout",
                 retrieval_hits=hits,
             )
         except OllamaProviderError as e:
             return TurnResult(
-                content=f"⚠️ Ollama error: {e}",
-                action="kb_query",
-                kb_mode="keep",
-                reason="ollama error",
+                content=(f"⚠️ Errore Ollama: {e}" if lang == "it" else f"⚠️ Ollama error: {e}"),
+                action="workflow",
+                reason="kb ollama error",
                 retrieval_hits=hits,
             )
 
-        answer = (resp.content or "").strip()
-        if '\n> "' not in answer:
-            q = self._make_quote_from_context(context)
-            if q:
-                answer += q
+        return TurnResult(
+            content=(resp.content or "").strip(),
+            action="workflow",
+            reason="kb_query",
+            retrieval_hits=hits,
+        )
 
-        return TurnResult(content=answer, action="kb_query", kb_mode="keep", reason="kb_query", retrieval_hits=hits)
+    async def _workflow_news_digest(self, *, user_text: str, lang: str, status: StatusCb | None) -> TurnResult:
+        query = (user_text or "").strip()
+        if query.lower().startswith("/news"):
+            query = query[5:].strip()
+        if not query:
+            query = "notizie del giorno" if lang == "it" else "latest news"
 
-    # --------- Tool runner (ToolSpec) ---------
-    async def _run_tool(self, mm, lang: str, tool_name: str, args: dict[str, Any]) -> TurnResult:
-        self._ensure_tools()
-        tool = self.tools.get(tool_name)
-        if not tool:
-            msg = ("Tool sconosciuto." if lang == "it" else "Unknown tool.")
-            mm.append_turn("assistant", msg)
-            return TurnResult(content=msg, action="tool", kb_mode="keep", reason="no tool")
+        if status:
+            await status("📰 Raccolgo le fonti news…")
 
         try:
-            model = tool.validate(args or {})
-            res = await tool.handler(model)
+            result = await self._run_tool(
+                "news_digest",
+                NewsDigestArgs(query=query, count=6, fetch_chars=12000).model_dump(),
+            )
         except Exception as e:
-            _print_terminal_error(f"[tool:{tool_name}] ERROR:", e)
-            msg = ("⚠️ Errore tool." if lang == "it" else "⚠️ Tool error.")
-            mm.append_turn("assistant", msg)
-            return TurnResult(content=msg, action="tool", kb_mode="keep", reason="tool error")
+            return TurnResult(
+                content=(f"Errore news digest: {e}" if lang == "it" else f"News digest error: {e}"),
+                action="workflow",
+                reason="news tool exception",
+            )
 
-        if not isinstance(res, dict) or not res.get("ok"):
-            err = ""
-            try:
-                err = (res.get("error") or "").strip() if isinstance(res, dict) else ""
-            except Exception:
-                err = ""
-            msg = ("⚠️ Operazione non riuscita." if lang == "it" else "⚠️ Operation failed.")
-            if err:
-                msg += ("\nMotivo: " if lang == "it" else "\nReason: ") + err
-            mm.append_turn("assistant", msg)
-            return TurnResult(content=msg, action="tool", kb_mode="keep", reason="tool fail")
+        if not result.get("ok"):
+            err = str(result.get("error") or "news_digest failed")
+            return TurnResult(
+                content=(f"News digest fallito: {err}" if lang == "it" else f"News digest failed: {err}"),
+                action="workflow",
+                reason="news tool failed",
+            )
 
-        data = res.get("data") or {}
-        text = ""
-        if isinstance(data, dict) and "text" in data:
-            text = str(data.get("text") or "")
+        data = result.get("data") or {}
+        items = list(data.get("items") or [])
+        if not items:
+            return TurnResult(
+                content=("Non ho trovato fonti abbastanza buone per costruire una rassegna." if lang == "it" else "I could not find enough good sources to build a digest."),
+                action="workflow",
+                reason="news no items",
+            )
+
+        lines: list[str] = [f"📰 News digest — {query}", ""]
+        for idx, item in enumerate(items, start=1):
+            headline = str(item.get("title") or "Untitled").strip()
+            url = str(item.get("url") or "").strip()
+            snippet = str(item.get("description") or item.get("snippet") or item.get("text") or "").strip()
+            lines.append(f"{idx}. {headline}")
+            if snippet:
+                lines.append(f"   {snippet[:350].strip()}")
+            if url:
+                lines.append(f"   {url}")
+            lines.append("")
+
+        return TurnResult(content="\n".join(lines).strip(), action="workflow", reason="news_digest")
+
+    async def _workflow_youtube(self, *, user_text: str, lang: str, status: StatusCb | None) -> TurnResult:
+        url = _first_youtube_url(user_text)
+        if not url:
+            return TurnResult(
+                content=("Non trovo un URL YouTube valido." if lang == "it" else "I cannot find a valid YouTube URL."),
+                action="workflow",
+                reason="youtube url missing",
+            )
+
+        if status:
+            await status("🎬 Recupero transcript e preparo il riassunto…")
+
+        try:
+            result = await self._run_tool("yt_summary", YTSummaryArgs(url=url, lang=lang).model_dump())
+        except Exception as e:
+            return TurnResult(
+                content=(f"Errore YouTube summary: {e}" if lang == "it" else f"YouTube summary error: {e}"),
+                action="workflow",
+                reason="youtube tool exception",
+            )
+
+        if not result.get("ok"):
+            err = str(result.get("error") or "yt_summary failed")
+            return TurnResult(
+                content=(f"Riassunto YouTube fallito: {err}" if lang == "it" else f"YouTube summary failed: {err}"),
+                action="workflow",
+                reason="youtube tool failed",
+            )
+
+        data = result.get("data") or {}
+        summary = str(data.get("summary") or "").strip()
+
+        return TurnResult(
+            content=summary or ("Nessun riassunto disponibile." if lang == "it" else "No summary available."),
+            action="workflow",
+            reason="youtube_summarizer",
+        )
+
+    async def _workflow_podcast(self, *, user_text: str, lang: str, status: StatusCb | None) -> TurnResult:
+        topic = user_text.strip()
+        if topic.lower().startswith("/podcast"):
+            topic = topic[8:].strip()
+
+        detected = detect_podcast_request(user_text, self.cfg)
+        if detected is not None:
+            maybe_topic, maybe_lang = detected
+            if maybe_topic:
+                topic = maybe_topic
+            if maybe_lang:
+                lang = maybe_lang
+
+        if not topic:
+            topic = "podcast"
+
+        if status:
+            await status("🎙️ Sto generando il podcast…")
+
+        try:
+            result = await generate_podcast(self.cfg, self.provider, topic=topic, lang=lang, status=status)
+        except Exception as e:
+            return TurnResult(
+                content=(f"Errore podcast: {e}" if lang == "it" else f"Podcast error: {e}"),
+                action="workflow",
+                reason="podcast generation error",
+            )
+
+        msg = (
+            f"🎧 Podcast pronto.\nAudio: {result.audio_path}"
+            if lang == "it"
+            else f"🎧 Podcast ready.\nAudio: {result.audio_path}"
+        )
+
+        return TurnResult(
+            content=msg,
+            action="workflow",
+            reason="podcast",
+            audio_path=result.audio_path,
+            script=result.script,
+        )
+
+    async def _dispatch_workflow(self, *, session: Session, workflow_name: str, user_text: str, lang: str, status: StatusCb | None) -> TurnResult:
+        name = (workflow_name or "").strip()
+        if name == "chat":
+            return await self._chat(session=session, user_text=user_text, lang=lang, status=status)
+        if name == "kb_query":
+            return await self._workflow_kb_query(session=session, user_text=user_text, lang=lang, status=status)
+        if name == "news_digest":
+            return await self._workflow_news_digest(user_text=user_text, lang=lang, status=status)
+        if name == "youtube_summarizer":
+            return await self._workflow_youtube(user_text=user_text, lang=lang, status=status)
+        if name == "podcast":
+            return await self._workflow_podcast(user_text=user_text, lang=lang, status=status)
+        if name == "kb_ingest_pdf":
+            return TurnResult(
+                content=("L’ingest PDF va avviato da comando esplicito (/kb ingest ... oppure caricando un PDF su Telegram)." if lang == "it" else "PDF ingest must be started via an explicit command (/kb ingest ...) or by uploading a PDF on Telegram."),
+                action="workflow",
+                reason="kb ingest is command-managed",
+            )
+        return TurnResult(
+            content=(f"Workflow non supportato: {name}" if lang == "it" else f"Unsupported workflow: {name}"),
+            action="workflow",
+            reason="unknown workflow",
+        )
+
+    async def one_turn(self, *, session: Session, user_text: str, status: StatusCb | None = None) -> TurnResult:
+        text = (user_text or "").strip()
         if not text:
-            text = json.dumps(data, ensure_ascii=False)[:2500]
-        mm.append_turn("assistant", text)
-        return TurnResult(content=text, action="tool", kb_mode="keep", reason="tool ok")
+            return TurnResult(content="", action="noop", reason="empty input")
 
-    # --------- Main entry ---------
-    async def one_turn(self, session, user_text: str, status: StatusCb | None = None, input_lang: str | None = None) -> TurnResult:
-        mm = make_memory_manager(self.cfg, session, self.workspace)
-
-        lang = (input_lang or "").strip() or detect_language(user_text, default=getattr(self.cfg, "default_language", "it"))
-
-        # deterministic ping
-        if (user_text or "").strip().lower() == "ping":
-            mm.append_turn("user", user_text)
-            content = ping_reply(lang)
-            mm.append_turn("assistant", content)
-            return TurnResult(content=content, action="chat", kb_mode="keep", reason="ping")
-
-        # deterministic remember (keeps old behavior)
-        # (memory manager already handles remember patterns internally in existing codebase)
-        mm.append_turn("user", user_text)
-
-        # podcast trigger (keep existing)
-        pc = detect_podcast_request(user_text, self.cfg)
-        if pc:
-            topic, plang = pc
-            use_lang = (plang or "").strip() or lang
-            if status:
-                await status("🎙 Podcast…")
-            try:
-                pr = await generate_podcast(self.cfg, self.provider, topic=topic, lang=use_lang, status=status)
-            except Exception as e:
-                _print_terminal_error("[podcast] ERROR:", e)
-                content = ("⚠️ Errore podcast." if use_lang == "it" else "⚠️ Podcast error.")
-                mm.append_turn("assistant", content)
-                return TurnResult(content=content, action="podcast", kb_mode="keep", reason="podcast error")
-            content = "✅ Podcast pronto." if use_lang == "it" else "✅ Podcast ready."
-            mm.append_turn("assistant", content)
-            return TurnResult(content=content, action="podcast", kb_mode="keep", reason="podcast", audio_path=pr.audio_path, script=pr.script)
+        lang = detect_language(text, default=self.cfg.default_language)
 
         if status:
-            await status("🧭 Routing…")
+            await status("🧭 Decido il percorso migliore…")
 
-        state_file = getattr(session, "state_file", self.workspace / "state" / "router.json")
-        try:
-            st = session.get_state() or {}
-            if isinstance(st, dict):
-                state_file.parent.mkdir(parents=True, exist_ok=True)
-                state_file.write_text(json.dumps({
-                    "kb_name": str(st.get("kb_name") or ""),
-                    "kb_enabled": bool(st.get("kb_enabled", True)),
-                }), encoding="utf-8")
-        except Exception:
-            pass
-        try:
-            st = session.get_state() or {}
-            if isinstance(st, dict):
-                state_file.parent.mkdir(parents=True, exist_ok=True)
-                state_file.write_text(json.dumps({
-                    "kb_name": str(st.get("kb_name") or ""),
-                    "kb_enabled": bool(st.get("kb_enabled", True)),
-                }), encoding="utf-8")
-        except Exception:
-            pass
-        try:
-            st = session.get_state() or {}
-            if isinstance(st, dict):
-                state_file.parent.mkdir(parents=True, exist_ok=True)
-                state_file.write_text(json.dumps({
-                    "kb_name": str(st.get("kb_name") or ""),
-                    "kb_enabled": bool(st.get("kb_enabled", True)),
-                }), encoding="utf-8")
-        except Exception:
-            pass
-        try:
-            r = json.loads(route_json_one_line(user_text, state_file, default_language=getattr(self.cfg, "default_language", "it")))
-        except Exception:
-            r = {"route": "workflow", "workflow": "chat", "lang": lang, "score": 0.0}
+        decision = deterministic_route(
+            user_text=text,
+            state_file=session.state_file,
+            default_language=lang,
+        )
 
-        lang = (r.get("lang") or lang).strip() or lang
-
-        # Tool route (explicit tool ...)
-        if (r.get("route") or "") == "tool":
-            tool_name = (r.get("tool_name") or "").strip()
-            args = r.get("args") if isinstance(r.get("args"), dict) else {}
-
-            # KB safety net:
-            # if a KB is active and router mistakenly picks a tool without meaningful args,
-            # prefer kb_query for normal natural-language questions.
-            kb_name = getattr(session, "kb_name", None)
-            try:
-                st = session.get_state() or {}
-                if isinstance(st, dict) and st.get("kb_name"):
-                    kb_name = st.get("kb_name")
-            except Exception:
-                pass
-
-            t_user = (user_text or "").strip()
-            low_user = t_user.lower()
-
-            looks_like_plain_question = (
-                t_user
-                and not low_user.startswith("/")
-                and not low_user.startswith("tool ")
-                and "youtube.com" not in low_user
-                and "youtu.be" not in low_user
-                and not low_user.startswith("news:")
+        if decision.action == "tool":
+            result = await self._run_explicit_tool(
+                lang=lang,
+                tool_name=decision.name,
+                args=dict(decision.args or {}),
+            )
+        else:
+            result = await self._dispatch_workflow(
+                session=session,
+                workflow_name=decision.name,
+                user_text=text,
+                lang=lang,
+                status=status,
             )
 
-            meaningful_args = {k: v for k, v in (args or {}).items() if k not in {"lang"} and bool(v)}
-            bad_tool_without_args = (
-                tool_name in {"sandbox_python", "sandbox_file", "sandbox_web"}
-                and not meaningful_args
-            )
+        if result.content.strip():
+            self._append_turn_memory(session, text, result.content)
 
-            if kb_name and looks_like_plain_question and bad_tool_without_args:
-                kb = await self._kb_query(session, user_text, lang, status)
-                mm.append_turn("assistant", kb.content)
-                return kb
-
-            return await self._run_tool(mm, lang, tool_name, args)
-
-        wf = (r.get("workflow") or "chat").strip()
-        memory_context = self._memory_context(mm)
-
-        # Workflows
-        if wf == "kb_query":
-            return await self._kb_query(session, user_text, lang, status)
-
-        if wf == "kb_ingest_pdf":
-            # delegate to tool
-            return await self._run_tool(mm, lang, "kb_ingest_pdf", {"text": user_text, "lang": lang})
-
-        if wf == "youtube_summarizer":
-            if status:
-                await status("🎬 YouTube…")
-            self._ensure_tools()
-            yt = self.tools.get("yt_transcript")
-            if not yt:
-                msg = "yt_transcript tool missing"
-                mm.append_turn("assistant", msg)
-                return TurnResult(content=msg, action="workflow", kb_mode="keep", reason="missing yt tool")
-
-            url = _extract_first_url(user_text) or user_text.strip()
-            model = yt.validate({"url": url, "lang": lang})
-            tr = await yt.handler(model)
-            if not tr.get("ok"):
-                err = tr.get("error") or "yt transcript failed"
-                mm.append_turn("assistant", err)
-                return TurnResult(content=str(err), action="workflow", kb_mode="keep", reason="yt failed")
-
-            transcript = ((tr.get("data") or {}).get("transcript") or "").strip()
-            summarizer = SummarizerAgent(self.provider)
-            sres = await summarizer.run(input_text=transcript, lang=lang, memory_ctx=memory_context, kind="youtube")
-            mm.append_turn("assistant", sres.text)
-            return TurnResult(content=sres.text, action="workflow", kb_mode="keep", reason="youtube_summarizer")
-
-        if wf == "news_digest":
-            if status:
-                await status("🗞 News…")
-            q = user_text
-            low = q.lower().strip()
-            if low.startswith("news:"):
-                q = q.split(":", 1)[1].strip()
-            if low.startswith("/news"):
-                q = q.split(None, 1)[1].strip() if " " in q else ""
-
-            self._ensure_tools()
-            retriever = RetrieverAgent(self.tools)
-            rres = await retriever.run(input_text=q, lang=lang, memory_ctx=memory_context, mode="news")
-            if not rres.ok:
-                msg = rres.data.get("error") or "news retrieval failed"
-                mm.append_turn("assistant", str(msg))
-                return TurnResult(content=str(msg), action="workflow", kb_mode="keep", reason="news retrieval failed")
-
-            summarizer = SummarizerAgent(self.provider)
-            sres = await summarizer.run(input_text=rres.text, lang=lang, memory_ctx=memory_context, kind="news")
-            mm.append_turn("assistant", sres.text)
-            return TurnResult(content=sres.text, action="workflow", kb_mode="keep", reason="news_digest")
-
-        # Default chat
-        if status:
-            await status("💭 Thinking…")
-
-        base_context = system_base_context(lang) + "\n"
-        try:
-            resp = await self.provider.chat(
-                messages=[
-                    {"role": "system", "content": base_context + memory_context},
-                    {"role": "user", "content": PromptPack(lang=lang).orchestrator(user_text)},
-                ],
-                tools=None,
-                max_tokens=650,
-                temperature=0.0,
-            )
-        except OllamaTimeout:
-            content = "⏱️ Local model timed out. Increase ollama.timeout_s."
-            mm.append_turn("assistant", content)
-            return TurnResult(content=content, action="chat", kb_mode="keep", reason="ollama timeout")
-        except OllamaProviderError as e:
-            content = f"⚠️ Ollama error: {e}"
-            mm.append_turn("assistant", content)
-            return TurnResult(content=content, action="chat", kb_mode="keep", reason="ollama error")
-
-        content = (resp.content or "").strip() or "(empty)"
-        mm.append_turn("assistant", content)
-        return TurnResult(content=content, action="chat", kb_mode="keep", reason="chat")
+        return TurnResult(
+            content=result.content,
+            action=result.action,
+            reason=decision.reason or result.reason,
+            score=float(decision.score or 0.0),
+            retrieval_hits=result.retrieval_hits,
+            audio_path=result.audio_path,
+            script=result.script,
+        )

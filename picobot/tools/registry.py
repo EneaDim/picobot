@@ -1,59 +1,93 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict
+# Registry tool unico e compatibile.
+#
+# Obiettivi:
+# - API semplice
+# - accesso stabile a self.tools
+# - compatibilità con codice che usa:
+#   - registry.register(...)
+#   - registry.get(...)
+#   - registry.resolve_name(...)
+#   - registry.list()
+#   - registry.tools
+#
+# Questa versione evita mismatch tra implementazioni vecchie e nuove.
 
 from picobot.tools.base import ToolSpec
 
 
 class ToolRegistry:
+    """
+    Registro in-memory dei tool.
+    """
+
+    def __init__(self) -> None:
+        # Importante: manteniamo questo attributo pubblico perché
+        # parte del codice legacy/ibrido si aspetta registry.tools.
+        self.tools: dict[str, ToolSpec] = {}
+
+        # Alias/canonical names semplici.
+        self.aliases: dict[str, str] = {}
+
+    def register(self, spec: ToolSpec, aliases: list[str] | None = None) -> None:
+        """
+        Registra un tool e opzionali alias.
+        """
+        if not isinstance(spec, ToolSpec):
+            raise TypeError(f"expected ToolSpec, got {type(spec)!r}")
+
+        name = str(spec.name or "").strip()
+        if not name:
+            raise ValueError("tool spec name must not be empty")
+
+        self.tools[name] = spec
+
+        for alias in aliases or []:
+            a = str(alias or "").strip()
+            if a:
+                self.aliases[a] = name
 
     def resolve_name(self, name: str) -> str:
-        n = (name or "").strip()
-        if not n:
-            return ""
-        if n in self.tools:
-            return n
-        # common normalizations
-        n2 = n.replace("-", "_")
-        if n2 in self.tools:
-            return n2
-        n3 = n.replace("_", "-")
-        if n3 in self.tools:
-            return n3
-        # explicit aliases (keep minimal)
-        aliases = {
-            "py": "sandbox_python",
-            "python": "sandbox_python",
-            "sandbox:python": "sandbox_python",
-            "file": "sandbox_file",
-            "sandbox:file": "sandbox_file",
-        }
-        a = aliases.get(n)
-        if a and a in self.tools:
-            return a
-        return n  # fallback (unknown)
-    def __init__(self) -> None:
-        self._tools: Dict[str, ToolSpec] = {}
+        """
+        Risolve un nome tool considerando alias.
+        """
+        raw = str(name or "").strip()
+        if not raw:
+            raise KeyError("empty tool name")
 
-    def register(self, tool: ToolSpec) -> None:
-        if tool.name in self._tools:
-            raise ValueError(f"tool already registered: {tool.name}")
-        self._tools[tool.name] = tool
+        return self.aliases.get(raw, raw)
 
     def get(self, name: str) -> ToolSpec:
-        if name not in self._tools:
+        """
+        Restituisce il ToolSpec risolto.
+        """
+        resolved = self.resolve_name(name)
+
+        if resolved not in self.tools:
             raise KeyError(f"unknown tool: {name}")
-        return self._tools[name]
+
+        return self.tools[resolved]
+
+    def has(self, name: str) -> bool:
+        """
+        True se il tool esiste.
+        """
+        try:
+            resolved = self.resolve_name(name)
+        except Exception:
+            return False
+
+        return resolved in self.tools
 
     def list(self) -> list[str]:
-        return sorted(self._tools.keys())
+        """
+        Elenco ordinato dei tool canonici registrati.
+        """
+        return sorted(self.tools.keys())
 
     def specs(self) -> list[ToolSpec]:
-        return [self._tools[k] for k in self.list()]
-
-
-@dataclass(frozen=True)
-class ToolResult:
-    name: str
-    data: dict
+        """
+        Elenco ToolSpec ordinato per nome.
+        """
+        return [self.tools[name] for name in self.list()]

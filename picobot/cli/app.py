@@ -1,239 +1,313 @@
 from __future__ import annotations
 
-
+import argparse
 import asyncio
-import json
-import shutil
-import subprocess
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-import typer
-
 from picobot.agent.orchestrator import Orchestrator
-from picobot.agent.prompts import detect_language
-from picobot.channels.telegram import TelegramChannel
-from picobot.config.init import init_project
 from picobot.config.loader import load_config
 from picobot.providers.ollama import OllamaProvider
-from picobot.session.manager import SessionManager
-from picobot.ui import ConsoleUI, ConsoleOptions, Status, handle_command, make_readline
-from picobot.utils.helpers import workspace_path
+from picobot.session.manager import Session, SessionManager
+from picobot.ui import handle_command
 
-app = typer.Typer(add_completion=False)
-
-
-def _rewrite_slash_commands(line: str) -> str:
-    """
-    Deterministic CLI slash commands that map to explicit tool lines.
-    Keeps router simple and tool args valid.
-    """
-    t = (line or "").strip()
-    if not t.startswith("/"):
-        return line
-
-    # /wsearch <query>  -> tool web_search {"query": "...", "count": 5}
-    if t.startswith("/wsearch"):
-        q = t[len("/wsearch"):].strip()
-        if not q:
-            return line
-        payload = {"query": q, "count": 5}
-        return "tool web_search " + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-
-    return line
-def _print_banner(ui: ConsoleUI) -> None:
-    ui.send_text("🤖 picobot")
-    ui.send_text("  🔎 Retrieval (local KB)")
-    ui.send_text("  🛠 Tools (YouTube transcript/summary, PDF ingest)")
-    ui.send_text("  🎙 Podcast generator (trigger-based)")
-    ui.send_text("  📝 Memory (global MEMORY + session history/summary)")
-    ui.send_text("  ⌨️  Tab completion + history (type /help)")
-    ui.send_text("")
+try:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+    from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.patch_stdout import patch_stdout
+except Exception:  # pragma: no cover
+    PromptSession = None  # type: ignore
+    AutoSuggestFromHistory = None  # type: ignore
+    InMemoryHistory = None  # type: ignore
+    Completer = object  # type: ignore
+    Completion = None  # type: ignore
+    Document = None  # type: ignore
+    patch_stdout = None  # type: ignore
 
 
-def _run_coro(coro):
-    """
-    Run an async coroutine from sync CLI code, without nesting asyncio.run().
-    prompt_toolkit may already create an event loop internally.
-    """
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
 
-    if loop.is_running():
-        raise RuntimeError("Event loop already running; cannot run coroutine from sync context.")
-    return loop.run_until_complete(coro)
+FG_CYAN = "\033[96m"
+FG_MAGENTA = "\033[95m"
+FG_GREEN = "\033[92m"
+FG_YELLOW = "\033[93m"
+FG_WHITE = "\033[97m"
+FG_RED = "\033[91m"
 
 
-def _play_audio(cfg, audio_path: Path) -> None:
-    tools = getattr(cfg, "tools", None)
-    ffmpeg_bin = str(getattr(tools, "ffmpeg_bin", "ffmpeg") or "ffmpeg").strip() or "ffmpeg"
-    aplay_bin = str(getattr(tools, "aplay_bin", "aplay") or "aplay").strip() or "aplay"
-
-    ffplay = shutil.which("ffplay")
-    if ffplay:
-        subprocess.run([ffplay, "-nodisp", "-autoexit", str(audio_path)], check=False)
-        return
-
-    p1 = subprocess.Popen(
-        [ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-i", str(audio_path), "-f", "wav", "-"],
-        stdout=subprocess.PIPE,
-    )
-    try:
-        subprocess.run([aplay_bin, "-"], stdin=p1.stdout, check=False)
-    finally:
-        try:
-            p1.terminate()
-        except Exception:
-            pass
+def _s(text: str, *codes: str) -> str:
+    return "".join(codes) + text + RESET
 
 
-@app.command()
-def chat(session: str = typer.Option("default", "--session", "-s")) -> None:
+def _clear_line() -> str:
+    return "\r\033[2K"
+
+
+@dataclass
+class CLIContext:
+    session: Session
+
+
+class SlashCommandCompleter(Completer):
+    ROOT_COMMANDS = [
+        "/help",
+        "/new",
+        "/session",
+        "/mem",
+        "/memory",
+        "/kb",
+        "/route",
+        "/news",
+        "/podcast",
+        "/exit",
+    ]
+
+    SESSION_SUBS = [
+        "/session list",
+        "/session set ",
+    ]
+
+    MEM_SUBS = [
+        "/mem show",
+        "/mem clear",
+        "/memory show",
+        "/memory clear",
+    ]
+
+    KB_SUBS = [
+        "/kb list",
+        "/kb use ",
+        "/kb ingest ",
+    ]
+
+    def get_completions(self, document: Document, complete_event):
+        text = document.text_before_cursor
+
+        if not text.startswith("/"):
+            return
+
+        stripped = text.strip()
+        candidates: list[str] = []
+
+        if stripped in {"", "/"}:
+            candidates = self.ROOT_COMMANDS
+        elif stripped.startswith("/session"):
+            candidates = self.SESSION_SUBS
+        elif stripped.startswith("/mem") or stripped.startswith("/memory"):
+            candidates = self.MEM_SUBS
+        elif stripped.startswith("/kb"):
+            candidates = self.KB_SUBS
+        else:
+            candidates = self.ROOT_COMMANDS
+
+        for item in candidates:
+            if item.startswith(text):
+                yield Completion(item, start_position=-len(text))
+
+
+class CLIInput:
+    def __init__(self, *, use_prompt_toolkit: bool, vi_mode: bool) -> None:
+        self.use_ptk = bool(use_prompt_toolkit and PromptSession is not None)
+
+        self.session = None
+        if self.use_ptk:
+            self.session = PromptSession(
+                history=InMemoryHistory() if InMemoryHistory is not None else None,
+                auto_suggest=AutoSuggestFromHistory() if AutoSuggestFromHistory is not None else None,
+                vi_mode=bool(vi_mode),
+                completer=SlashCommandCompleter(),
+                complete_while_typing=False,
+            )
+
+    async def prompt(self, prompt_text: str) -> str:
+        if self.session is not None:
+            return await self.session.prompt_async(prompt_text)
+        return await asyncio.to_thread(input, prompt_text)
+
+
+class TransientStatus:
+    def __init__(self) -> None:
+        self.current = ""
+        self.enabled = True
+
+    def show(self, text: str) -> None:
+        if not self.enabled:
+            return
+        self.current = text or ""
+        if not self.current:
+            return
+        sys.stdout.write(_clear_line())
+        sys.stdout.write(_s(self.current, DIM, FG_YELLOW))
+        sys.stdout.flush()
+
+    def clear(self) -> None:
+        if not self.enabled:
+            return
+        if not self.current:
+            return
+        sys.stdout.write(_clear_line())
+        sys.stdout.flush()
+        self.current = ""
+
+
+def _render_banner(session: Session, workspace: Path) -> str:
+    line1 = f"{_s('🤖 Picobot', BOLD, FG_CYAN)}  {_s('local-first modular assistant', DIM, FG_WHITE)}"
+    line2 = f"{_s('🧠 Session', BOLD, FG_MAGENTA)}  {session.session_id}"
+    line3 = f"{_s('📁 Workspace', BOLD, FG_MAGENTA)}  {workspace}"
+    line4 = f"{_s('💡 Hint', BOLD, FG_MAGENTA)}  /help per i comandi"
+    return "\n".join([line1, line2, line3, line4])
+
+
+def _render_user_prompt() -> str:
+    # Niente ANSI qui: prompt_toolkit altrimenti può mostrarli grezzi.
+    return "You: "
+
+
+def _render_assistant(reply: str) -> str:
+    return f"{_s('🤖:', BOLD, FG_GREEN)} {reply.strip()}"
+
+
+def _render_error(reply: str) -> str:
+    return f"{_s('⚠️:', BOLD, FG_RED)} {reply.strip()}"
+
+
+async def _run_cli() -> int:
+    parser = argparse.ArgumentParser(description="Picobot CLI")
+    parser.add_argument("--session", default="default", help="Session ID iniziale")
+    args = parser.parse_args()
+
     cfg = load_config()
-    ws = workspace_path(cfg)
-    sm = SessionManager(ws)
+    workspace = Path(cfg.workspace).expanduser().resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
 
-    ui = ConsoleUI(debug_enabled=bool(getattr(getattr(cfg, "debug", None), "enabled", False)))
-    st = Status(ui)
+    sm = SessionManager(workspace)
+    session = sm.get(args.session)
 
-    provider = OllamaProvider(cfg.ollama.base_url, cfg.ollama.model, timeout_s=cfg.ollama.timeout_s)
-    orch = Orchestrator(cfg, provider, ws)
-
-    current = sm.get(session)
-
-    _print_banner(ui)
-
-    read_line = make_readline(
-        ws,
-        ConsoleOptions(
-            use_prompt_toolkit=bool(getattr(getattr(cfg, "ui", None), "use_prompt_toolkit", True)),
-            vi_mode=bool(getattr(getattr(cfg, "ui", None), "vi_mode", False)),
-        ),
+    provider = OllamaProvider(
+        base_url=cfg.ollama.base_url,
+        model=cfg.ollama.model,
+        timeout_s=cfg.ollama.timeout_s,
     )
 
-    global_memory = ws / "memory" / "MEMORY.md"
-    global_memory.parent.mkdir(parents=True, exist_ok=True)
-    if not global_memory.exists():
-        global_memory.write_text("# Memory\n\n", encoding="utf-8")
+    orch = Orchestrator(cfg, provider, workspace)
 
-    async def status_cb(msg: str) -> None:
-        # terminal-only transient, never errors
-        with st.show(msg):
-            await asyncio.sleep(0)
+    cli_ctx = CLIContext(session=session)
+    cli_input = CLIInput(
+        use_prompt_toolkit=bool(getattr(cfg.ui, "use_prompt_toolkit", True)),
+        vi_mode=bool(getattr(cfg.ui, "vi_mode", False)),
+    )
+    status = TransientStatus()
+
+    print(_render_banner(cli_ctx.session, workspace))
+    print()
+
+    async def status_cb(text: str) -> None:
+        raw = (text or "").strip().lower()
+
+        if "decido" in raw or "route" in raw or "percorso" in raw:
+            status.show("🧭 routing...")
+            return
+        if "thinking" in raw or "pensando" in raw:
+            status.show("💭 thinking...")
+            return
+        if "knowledge base" in raw or "kb" in raw or "retrieval" in raw:
+            status.show("🔎 retrieving...")
+            return
+        if "youtube" in raw or "transcript" in raw:
+            status.show("🎬 processing youtube...")
+            return
+        if "podcast" in raw or "audio" in raw:
+            status.show("🎙️ generating audio...")
+            return
+        if "news" in raw or "fonti" in raw:
+            status.show("📰 collecting sources...")
+            return
+
+        status.show(f"✨ {text}")
+
+    async def _prompt_once() -> str:
+        if cli_input.use_ptk and patch_stdout is not None:
+            with patch_stdout():
+                return await cli_input.prompt(_render_user_prompt())
+        return await cli_input.prompt(_render_user_prompt())
 
     while True:
         try:
-            user = read_line("You:").strip()
-            user = _rewrite_slash_commands(user)
+            raw = await _prompt_once()
         except (EOFError, KeyboardInterrupt):
-            ui.send_text("\n/exit")
-            ui.send_text("bye 👋")
-            return
+            print()
+            print(_s("Bye 👋", FG_YELLOW))
+            return 0
 
-        if not user:
+        user_text = (raw or "").strip()
+        if not user_text:
             continue
 
-        
-        # --- deterministic rewrite for news (workflow-friendly) ---
+        cmd = handle_command(
+            user_text,
+            session=cli_ctx.session,
+            session_manager=sm,
+            cfg=cfg,
+            workspace=workspace,
+        )
 
-        u = (user or "").strip()
+        if cmd.handled:
+            status.clear()
 
-        low = u.lower()
+            if cmd.new_session_id:
+                cli_ctx.session = sm.get(cmd.new_session_id)
 
-        if low.startswith("/news"):
+            if cmd.reply.strip():
+                print(_render_assistant(cmd.reply))
+                print()
 
-            q = u.split(None, 1)[1].strip() if " " in u else ""
+            if cmd.exit_requested:
+                return 0
 
-            if not q:
-
-                user = "/help"
-
-            else:
-
-                user = f"news: {q}"
-
-        elif low.startswith("news:"):
-
-            q = u.split(":", 1)[1].strip()
-
-            if q:
-
-                user = f"news: {q}"
-
-        cr = handle_command(user, session=current, session_manager=sm, cfg=cfg, workspace=ws)
-
-        if cr.handled:
-            if cr.exit_now:
-                ui.send_text("/exit")
-                ui.send_text(cr.reply or "bye 👋")
-                return
-
-            if cr.new_session_id:
-                current = sm.get(cr.new_session_id)
-
-            ui.send_text(cr.reply)
-
-            if cr.play_audio_path:
-                ap = Path(cr.play_audio_path).expanduser()
-                if not ap.exists():
-                    ui.send_text(f"❌ not found: {ap}")
-                else:
-                    _play_audio(cfg, ap)
             continue
 
-        if cr.rewrite_text:
-            user = cr.rewrite_text.strip()
-            if not user:
-                continue
+        try:
+            status.show("🧭 routing...")
 
-        input_lang = detect_language(user, default=getattr(cfg, "default_language", "it"))
+            result = await orch.one_turn(
+                session=cli_ctx.session,
+                user_text=user_text,
+                status=status_cb,
+            )
 
-        async def _turn():
-            return await orch.one_turn(current, user, status=status_cb, input_lang=input_lang)
+            status.clear()
 
-        res = _run_coro(_turn())
+        except KeyboardInterrupt:
+            status.clear()
+            print()
+            print(_s("Interrotto.", FG_YELLOW))
+            print()
+            continue
+        except Exception as e:
+            status.clear()
+            print(_render_error(f"Errore non gestito: {e}"))
+            print()
+            continue
 
-        if getattr(getattr(cfg, "debug", None), "enabled", False):
-            route = {"action": res.action, "kb_mode": res.kb_mode, "reason": res.reason}
-            ui.debug(f" route={json.dumps(route, ensure_ascii=False)}")
+        print(_render_assistant(result.content))
+        print()
 
-        ui.send_text(f"🤖 {res.content}")
-        ap = getattr(res, "audio_path", None)
-        if ap:
-            ui.send_text(f"📁 {ap}")
+    return 0
 
 
-@app.command()
-def telegram() -> None:
-    cfg = load_config()
-    if not cfg.telegram.enabled:
-        raise typer.Exit(code=2)
-
-    ws = workspace_path(cfg)
-    sm = SessionManager(ws)
-
-    provider = OllamaProvider(cfg.ollama.base_url, cfg.ollama.model, timeout_s=cfg.ollama.timeout_s)
-    orch = Orchestrator(cfg, provider, ws)
-
-    chan = TelegramChannel(cfg, sm, orch)
-    print("📨 Telegram bot running (polling)… Ctrl+C to stop")
-
+def main() -> None:
     try:
-        asyncio.run(chan.run())
+        code = asyncio.run(_run_cli())
     except KeyboardInterrupt:
-        print("\nbye 👋")
+        code = 130
+    sys.exit(code)
 
 
-@app.command()
-def init(force: bool = typer.Option(False, "--force", help="Overwrite existing .picobot/config.json")) -> None:
-    """Initialize project-local .picobot/ structure and config.json."""
-    res = init_project(force=force)
-    if res.get("status") == "exists":
-        typer.echo(f"✅ .picobot already initialized: {res['config']}")
-    else:
-        typer.echo("✅ Initialized .picobot")
-        typer.echo(f"  - config: {res.get('config')}")
-        typer.echo(f"  - workspace: {res.get('workspace')}")
-        typer.echo(f"  - memory: {res.get('memory')}")
+if __name__ == "__main__":
+    main()

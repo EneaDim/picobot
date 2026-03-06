@@ -1,164 +1,68 @@
 from __future__ import annotations
 
+# Questo file gestisce il caricamento del corpus router dal filesystem.
+#
+# Source of truth:
+# - picobot/routing_kb/routes/*.md
+#
+# Qui NON c'è logica di scoring.
+# Qui facciamo solo:
+# - discover dei file
+# - parse dei markdown
+# - validazione minima
+# - ordinamento stabile
+
+from pathlib import Path
+
+from picobot.router.documents import load_route_document, route_record_from_document
 from picobot.router.schemas import RouteRecord
 
 
-def default_router_records() -> list[RouteRecord]:
-    return [
-        RouteRecord(
-            id="workflow:news_digest",
-            kind="workflow",
-            name="news_digest",
-            title="News Digest",
-            description="Search the web and produce a concise news digest with multiple sources.",
-            capabilities=["news search", "web search", "digest", "source aggregation"],
-            limitations=["depends on search and web fetch"],
-            tags=["news", "web", "digest", "current events"],
-            example_queries=[
-                "/news artificial intelligence europe",
-                "/news guerra iran america",
-                "news: latest AI regulation in Europe",
-            ],
-            requires_kb=False,
-            requires_network=True,
-            priority=100,
-        ),
-        RouteRecord(
-            id="workflow:youtube_summarizer",
-            kind="workflow",
-            name="youtube_summarizer",
-            title="YouTube Summarizer",
-            description="Summarize a YouTube video by extracting transcript or metadata and producing a summary.",
-            capabilities=["youtube transcript", "video summary", "captions extraction"],
-            limitations=["depends on transcript or metadata availability"],
-            tags=["youtube", "video", "summary", "captions"],
-            example_queries=[
-                "summarize this youtube video https://www.youtube.com/watch?v=FDKahWbJV84",
-                "riassumi questo video youtube https://youtu.be/abc",
-            ],
-            requires_kb=False,
-            requires_network=False,
-            priority=95,
-        ),
-        RouteRecord(
-            id="workflow:kb_query",
-            kind="workflow",
-            name="kb_query",
-            title="Knowledge Base Query",
-            description="Answer questions using the active local knowledge base and indexed document chunks.",
-            capabilities=["document QA", "retrieval grounded answers", "manual and technical documentation lookup"],
-            limitations=["requires active KB", "answers only from indexed documents"],
-            tags=["kb", "rag", "documents", "pdf", "manual", "technical docs"],
-            example_queries=[
-                "how --trace works in verilator",
-                "what does the manual say about tracing?",
-                "nel documento cosa dice riguardo trace-fst?",
-                "explain the --trace option in verilator",
-            ],
-            requires_kb=True,
-            requires_network=False,
-            priority=90,
-        ),
-        RouteRecord(
-            id="tool:web_search",
-            kind="tool",
-            name="web_search",
-            title="Web Search via SearXNG",
-            description="Searches the web through the local SearXNG service running in Docker.",
-            capabilities=["web search", "find sources", "find pages", "find articles"],
-            limitations=["does not summarize by itself"],
-            tags=["search", "web", "sources", "searxng"],
-            example_queries=[
-                'tool web_search {"query":"verilator","count":3}',
-                "search the web for verilator tracing docs",
-            ],
-            requires_kb=False,
-            requires_network=True,
-            priority=80,
-        ),
-        RouteRecord(
-            id="tool:sandbox_python",
-            kind="tool",
-            name="sandbox_python",
-            title="Sandbox Python",
-            description="Execute explicit Python code safely inside the sandbox.",
-            capabilities=["python execution", "math", "small scripts"],
-            limitations=["requires explicit code input"],
-            tags=["python", "sandbox", "code"],
-            example_queries=[
-                'tool sandbox_python {"code":"print(2+2)"}',
-                "/py print(2+2)",
-            ],
-            requires_kb=False,
-            requires_network=False,
-            priority=70,
-        ),
-        RouteRecord(
-            id="tool:sandbox_file",
-            kind="tool",
-            name="sandbox_file",
-            title="Sandbox File",
-            description="Preview files inside the allowed workspace root.",
-            capabilities=["file preview", "safe file access"],
-            limitations=["requires explicit path and allowed root"],
-            tags=["file", "preview", "workspace"],
-            example_queries=[
-                '/file preview README.md',
-                'tool sandbox_file {"root":".","path":"README.md"}',
-            ],
-            requires_kb=False,
-            requires_network=False,
-            priority=65,
-        ),
-        RouteRecord(
-            id="tool:sandbox_web",
-            kind="tool",
-            name="sandbox_web",
-            title="Sandbox Web Fetch",
-            description="Fetch and clean the text of a URL through sandboxed HTTP access.",
-            capabilities=["page fetch", "html cleaning", "text extraction"],
-            limitations=["depends on reachable URL and whitelist policy"],
-            tags=["web", "fetch", "html", "page"],
-            example_queries=[
-                'tool sandbox_web {"url":"https://example.com"}',
-            ],
-            requires_kb=False,
-            requires_network=True,
-            priority=60,
-        ),
-        RouteRecord(
-            id="workflow:podcast",
-            kind="workflow",
-            name="podcast",
-            title="Podcast Generator",
-            description="Create a podcast-style audio script and optionally synthesize audio.",
-            capabilities=["podcast script", "audio generation", "narrative summary"],
-            limitations=["best for explicit podcast requests"],
-            tags=["podcast", "audio", "tts"],
-            example_queries=[
-                "/podcast artificial intelligence",
-                "podcast about AI in Europe",
-            ],
-            requires_kb=False,
-            requires_network=False,
-            priority=60,
-        ),
-        RouteRecord(
-            id="workflow:chat",
-            kind="workflow",
-            name="chat",
-            title="General Chat",
-            description="General conversation, reasoning, explanation and fallback behavior.",
-            capabilities=["chat", "reasoning", "general explanations"],
-            limitations=["not grounded unless a retrieval workflow is selected"],
-            tags=["chat", "general", "fallback"],
-            example_queries=[
-                "hello",
-                "what is verilator",
-                "explain local-first ai agents",
-            ],
-            requires_kb=False,
-            requires_network=False,
-            priority=10,
-        ),
-    ]
+def router_docs_dir() -> Path:
+    """
+    Restituisce la directory dei documenti di routing.
+    """
+    return (Path(__file__).resolve().parent.parent / "routing_kb" / "routes").resolve()
+
+
+def route_doc_paths() -> list[Path]:
+    """
+    Elenca i file markdown usati come source of truth del router.
+    """
+    root = router_docs_dir()
+    root.mkdir(parents=True, exist_ok=True)
+
+    return sorted([p for p in root.glob("*.md") if p.is_file()])
+
+
+def load_router_records() -> list[RouteRecord]:
+    """
+    Carica tutti i RouteRecord dal corpus markdown.
+    """
+    records: list[RouteRecord] = []
+    seen_ids: set[str] = set()
+    seen_names: set[tuple[str, str]] = set()
+
+    for path in route_doc_paths():
+        doc = load_route_document(path)
+        record = route_record_from_document(doc)
+
+        # Unicità dell'ID.
+        if record.id in seen_ids:
+            raise ValueError(f"duplicate router id: {record.id} ({path})")
+
+        # Unicità ragionevole di (kind, name).
+        pair = (record.kind, record.name)
+        if pair in seen_names:
+            raise ValueError(f"duplicate router kind/name: {pair} ({path})")
+
+        seen_ids.add(record.id)
+        seen_names.add(pair)
+
+        records.append(record)
+
+    # Ordinamento stabile:
+    # - prima priority discendente
+    # - poi id crescente
+    records.sort(key=lambda r: (-int(r.priority), r.id))
+    return records

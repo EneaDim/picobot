@@ -1,30 +1,40 @@
+---
+id: workflow:chat
+kind: workflow
+name: chat
+title: General Chat
+description: Conversazione generale, spiegazioni, brainstorming, traduzioni, riscrittura e fallback quando nessun tool o workflow specifico è chiaramente appropriato.
+capabilities:
+  - conversazione generale
+  - spiegazioni
+  - brainstorming
+  - traduzione
+  - riscrittura
+  - fallback
+limitations:
+  - non grounded sui documenti locali
+  - non esegue tool
+  - non produce retrieval documentale
+tags:
+  - chat
+  - conversation
+  - fallback
+  - explanation
+  - rewrite
+  - translate
+example_queries:
+  - ciao come va?
+  - spiegami cos’è un agent locale
+  - riscrivi questo testo in modo più chiaro
+  - traduci in inglese questo paragrafo
+  - dammi idee per un progetto python
+requires_kb: false
+requires_network: false
+enabled: true
+priority: 10
+---
+
 # chat
 
-## Intent
-Conversazione generale, domande aperte, brainstorming, spiegazioni, riscrittura, traduzioni (senza bisogno di tool),
-help generico, richieste non riconducibili chiaramente a KB/news/youtube/tools.
-
-## Italiano: esempi
-- ciao come va?
-- spiegami cos’è un agent locale
-- fammi un esempio di prompt
-- riscrivi questo testo in modo più chiaro: ...
-- traduci in inglese: ...
-- dammi idee per un progetto python
-- aiutami a scegliere tra due opzioni
-- cos’è ollama e come lo uso?
-
-## English: examples
-- hi, what can you do?
-- explain local-first agents
-- rewrite this paragraph: ...
-- translate to italian: ...
-- give me ideas for a python project
-- compare option A vs option B
-
-## Negative examples (should not be chat)
-- /news ... (news digest)
-- news: ... (news digest)
-- youtube link (youtube summarizer)
-- pdf/document/kb question (kb_query)
-- tool sandbox_python {...} (tool)
+Route di fallback per richieste generiche o non chiaramente classificabili
+come tool, workflow esterni, retrieval documentale o digest news.

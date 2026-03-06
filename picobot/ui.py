@@ -1,667 +1,293 @@
 from __future__ import annotations
 
-import asyncio
-import json
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
 
-from picobot.session.manager import SessionManager
-from picobot.retrieval.store import kb_paths, ensure_kb_dirs, list_kbs, count_source_files, count_store_files, copy_source_file, sanitize_kb_name
+from picobot.agent.router import deterministic_route
+from picobot.config.schema import Config
 from picobot.retrieval.ingest import ingest_kb
+from picobot.retrieval.store import copy_source_file, ensure_kb_dirs, list_kbs
+from picobot.session.manager import Session, SessionManager, sanitize_session_id
 
-# Optional CLI autocomplete
-_pt_prompt = None
-WordCompleter = None
-FileHistory = None
-try:
-    from prompt_toolkit import prompt as _pt_prompt  # type: ignore
-    from prompt_toolkit.completion import WordCompleter  # type: ignore
-    from prompt_toolkit.history import FileHistory  # type: ignore
-except Exception:  # pragma: no cover
-    _pt_prompt = None
-    WordCompleter = None
-    FileHistory = None
-
-# Optional rich console
-try:
-    from rich.console import Console
-except Exception:  # pragma: no cover
-    Console = None  # type: ignore
-
-# =========================================================
-# UI base
-# =========================================================
-
-class BaseUI:
-    """Minimal UI interface used by CLI and Telegram."""
-
-    def info(self, text: str) -> None:
-        raise NotImplementedError
-
-    def debug(self, text: str) -> None:
-        raise NotImplementedError
-
-    def error(self, text: str) -> None:
-        """Terminal-only errors. Telegram implementation must NEVER expose stack traces."""
-        raise NotImplementedError
-
-    async def transient(self, key: str, text: str) -> None:
-        """Transient status updates (e.g., 'Routing…', 'TTS…')."""
-        return
-
-    def send_text(self, text: str) -> None:
-        raise NotImplementedError
-
-    def send_file(self, path: str, caption: str | None = None) -> None:
-        raise NotImplementedError
-
-    def send_audio(self, path: str, caption: str | None = None) -> None:
-        raise NotImplementedError
-
-
-class ConsoleUI(BaseUI):
-    def __init__(self, *, debug_enabled: bool = False) -> None:
-        self.debug_enabled = debug_enabled
-        self._console = Console() if Console else None
-
-    def _print(self, text: str) -> None:
-        if self._console:
-            self._console.print(text)
-        else:
-            print(text)
-
-    def info(self, text: str) -> None:
-        self._print(text)
-
-    def debug(self, text: str) -> None:
-        if self.debug_enabled:
-            self._print(text)
-
-    def error(self, text: str) -> None:
-        # terminal only
-        if self._console:
-            self._console.print(text)
-        else:
-            print(text)
-
-    async def transient(self, key: str, text: str) -> None:
-        # Simple: print transient status line. (No spinner; deterministic.)
-        self.debug(f"{text}")
-        await asyncio.sleep(0)
-
-    def send_text(self, text: str) -> None:
-        self._print(text)
-
-    def send_file(self, path: str, caption: str | None = None) -> None:
-        cap = f" {caption}" if caption else ""
-        self._print(f"📎 {path}{cap}")
-
-    def send_audio(self, path: str, caption: str | None = None) -> None:
-        cap = f" {caption}" if caption else ""
-        self._print(f"🎧 {path}{cap}")
-
-
-class TelegramUI(BaseUI):
-    """
-    Thin adapter. Telegram channel should call these methods.
-    IMPORTANT: error() is terminal-only (no Telegram leak).
-    """
-    def __init__(self, *, debug_enabled: bool = False) -> None:
-        self.debug_enabled = debug_enabled
-
-    def info(self, text: str) -> None:
-        # TelegramChannel should send messages explicitly; keep as no-op
-        return
-
-    def debug(self, text: str) -> None:
-        if self.debug_enabled:
-            print(f"[telegram-ui] {text}", flush=True)
-
-    def error(self, text: str) -> None:
-        # NEVER send errors to Telegram; terminal only
-        print(f"[telegram-ui][error] {text}", flush=True)
-
-    def send_text(self, text: str) -> None:
-        return
-
-    def send_file(self, path: str, caption: str | None = None) -> None:
-        return
-
-    def send_audio(self, path: str, caption: str | None = None) -> None:
-        return
-
-
-# =========================================================
-# Status helper (backward compatible)
-# =========================================================
-
-class Status:
-    """Tiny helper used by CLI; kept for compatibility with older call sites."""
-    def __init__(self, ui: BaseUI) -> None:
-        self.ui = ui
-
-    def clear(self) -> None:
-        return
-
-    def show(self, text: str):
-        # context manager
-        class _Ctx:
-            def __enter__(_self):
-                self.ui.debug(text)
-                return _self
-
-            def __exit__(_self, exc_type, exc, tb):
-                return False
-
-        return _Ctx()
-
-
-# =========================================================
-# CLI readline (prompt_toolkit optional)
-# =========================================================
 
 @dataclass(frozen=True)
-class ConsoleOptions:
-    use_prompt_toolkit: bool = True
-    vi_mode: bool = False
-
-
-def make_readline(workspace: Path, opts: ConsoleOptions) -> Callable[[str], str]:
-    """
-    Returns a callable(prompt)->str.
-    Enables autocomplete if prompt_toolkit is available.
-    """
-    commands = [
-        "/help", "/h",
-        "/ping",
-        "/wsearch",
-        "/exit", "/quit",
-        "/session", "/session list", "/session set",
-        "/new",
-        "/kb", "/kb list", "/kb status", "/kb set", "/kb ingest", "/kb rebuild",
-        "/mem", "/mem show", "/mem clear",
-        "/podcast", "/podcast it", "/podcast en", "/podcast list", "/podcast play",
-        "/py",
-        "/file", "/file preview",
-    ]
-
-    def _read_plain(prompt: str) -> str:
-        p = (prompt + " ") if prompt and not prompt.endswith(" ") else prompt
-        return input(p)
-
-    if not opts.use_prompt_toolkit:
-        return _read_plain
-    if _pt_prompt is None or WordCompleter is None:
-        return _read_plain
-
-    completer = WordCompleter(commands, ignore_case=True, sentence=True)
-    hist_path = (workspace / "channels" / "cli" / "history.txt").resolve()
-    hist_path.parent.mkdir(parents=True, exist_ok=True)
-    history = FileHistory(str(hist_path)) if FileHistory else None
-
-    def _read(prompt: str) -> str:
-        p = (prompt + " ") if prompt and not prompt.endswith(" ") else prompt
-        try:
-            return _pt_prompt(
-                p,
-                completer=completer,
-                complete_while_typing=True,
-                vi_mode=bool(opts.vi_mode),
-                history=history,
-            )
-        except (EOFError, KeyboardInterrupt):
-            return ""
-        except Exception:
-            return _read_plain(prompt)
-
-    return _read
-
-
-# =========================================================
-# Commands (shared CLI + Telegram)
-# =========================================================
-
-@dataclass
 class CommandResult:
     handled: bool
     reply: str = ""
     new_session_id: str | None = None
-    rewrite_text: str | None = None
-    exit_now: bool = False
-    play_audio_path: str | None = None
+    exit_requested: bool = False
 
 
-def _strip_emojis(text: str) -> str:
-    # used if cfg.ui.use_emojis is False
+def _help_text() -> str:
     return (
-        text.replace("🧭 ", "")
-        .replace("🔎 ", "")
-        .replace("💭 ", "")
-        .replace("✅ ", "")
-        .replace("🛠 ", "")
-        .replace("🎙 ", "")
-        .replace("🗣 ", "")
-        .replace("📨 ", "")
+        "Comandi disponibili:\n"
+        "\n"
+        "/help\n"
+        "  mostra questo aiuto\n"
+        "\n"
+        "/new [session_id]\n"
+        "  crea o seleziona una nuova sessione\n"
+        "\n"
+        "/session\n"
+        "/session list\n"
+        "/session set <id>\n"
+        "  gestione sessioni\n"
+        "\n"
+        "/mem show\n"
+        "/mem clear\n"
+        "/memory show\n"
+        "/memory clear\n"
+        "  mostra o pulisce memoria e storia della sessione corrente\n"
+        "\n"
+        "/kb\n"
+        "/kb list\n"
+        "/kb use <kb_name>\n"
+        "/kb ingest <pdf_path>\n"
+        "  gestione knowledge base locale\n"
+        "\n"
+        "/route <testo>\n"
+        "  mostra la decisione del router\n"
+        "\n"
+        "/news <query>\n"
+        "  rassegna news via workflow\n"
+        "\n"
+        "/podcast <topic>\n"
+        "  genera un podcast\n"
+        "\n"
+        "/exit\n"
+        "  esce dalla CLI\n"
+    ).strip()
+
+
+def _session_info(session: Session) -> str:
+    state = session.get_state()
+    kb_name = str(state.get("kb_name") or "").strip() or "(nessuna)"
+    kb_enabled = bool(state.get("kb_enabled", True))
+
+    return (
+        f"Sessione corrente: {session.session_id}\n"
+        f"KB attiva: {kb_name}\n"
+        f"KB enabled: {'yes' if kb_enabled else 'no'}"
     )
 
 
-def _find_recent_podcasts(cfg, limit: int = 10) -> list[Path]:
-    pcfg = getattr(cfg, "podcast", None)
-    out_dir = Path(getattr(pcfg, "output_dir", "outputs/podcasts") if pcfg else "outputs/podcasts").expanduser()
-    if not out_dir.exists():
-        return []
-    cands: list[Path] = []
-    for p in out_dir.glob("*/podcast.*"):
-        if p.is_file():
-            cands.append(p)
-    for p in out_dir.glob("podcast.*"):
-        if p.is_file():
-            cands.append(p)
-    cands = sorted(set(cands), key=lambda x: x.stat().st_mtime, reverse=True)
-    return cands[: max(1, int(limit))]
+def _set_session_kb(session: Session, kb_name: str) -> str:
+    safe = sanitize_session_id(kb_name)
+    session.set_state({"kb_name": safe, "kb_enabled": True})
+    return safe
 
 
-def _help_text(use_emojis: bool) -> str:
-    if use_emojis:
-        return (
-            "🤖 picobot commands\n"
-            "  🧭 /help              Show this help\n"
-            "  🧩 /session list      List sessions\n"
-            "  🧩 /session set <id>  Switch session\n"
-            "  📚 /kb set <name>     Switch knowledge base\n"
-            "  📝 /mem show          Show global MEMORY + session SUMMARY + HISTORY tail\n"
-            "  🧹 /mem clear         Clear global MEMORY + session history/summary\n"
-            "  🎙 /podcast <topic>   Generate a podcast (trigger)\n"
-            "  🎙 /podcast it|en <topic>\n"
-            "  🎧 /podcast list      List recent podcasts (CLI)\n"
-            "  ▶️  /podcast play [path] (CLI)\n"
-            "  🚪 /exit              Quit (CLI)\n"
-        )
+def _read_text_file(path: Path, default_header: str) -> str:
+    if not path.exists():
+        return default_header
+    try:
+        return path.read_text(encoding="utf-8").strip() or default_header
+    except Exception:
+        return default_header
+
+
+def _show_memory(session: Session) -> str:
+    memory_text = _read_text_file(session.memory_file, "# Memory")
+    summary_text = _read_text_file(session.summary_file, "# Session Summary")
+    history_text = _read_text_file(session.history_file, "# Session History")
+
     return (
-        "picobot commands\n"
-        "  /help\n"
-        "  /session list\n"
-        "  /session set <id>\n"
-        "  /kb set <name>\n"
-        "  /mem show\n"
-        "  /mem clear\n"
-        "  /podcast <topic>\n"
-        "  /podcast it|en <topic>\n"
-        "  /podcast list\n"
-        "  /podcast play [path]\n"
-        "  /exit\n"
-    )
+        "=== MEMORY ===\n"
+        f"{memory_text}\n\n"
+        "=== SUMMARY ===\n"
+        f"{summary_text}\n\n"
+        "=== HISTORY ===\n"
+        f"{history_text}"
+    ).strip()
+
+
+def _clear_memory(session: Session) -> str:
+    session.root.mkdir(parents=True, exist_ok=True)
+    session.history_file.write_text("# Session History\n\n", encoding="utf-8")
+    session.summary_file.write_text("# Session Summary\n\n", encoding="utf-8")
+    session.memory_file.parent.mkdir(parents=True, exist_ok=True)
+    session.memory_file.write_text("# Memory\n\n", encoding="utf-8")
+    return "✅ Memoria e storia pulite."
 
 
 def handle_command(
-    text: str,
+    raw: str,
     *,
-    session: Any,
+    session: Session,
     session_manager: SessionManager,
-    cfg: Any,
+    cfg: Config,
     workspace: Path,
 ) -> CommandResult:
-    t = (text or "").strip()
-    if not t.startswith("/"):
+    text = (raw or "").strip()
+    if not text.startswith("/"):
         return CommandResult(handled=False)
 
-    parts = t.split(None, 2)
+    parts = text.split()
     cmd = parts[0].lower()
 
-    # --- dev: inspect router scores (bm25 vs vector) ---
-    if cmd == "/route":
-        q = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
-        if not q:
-            return CommandResult(handled=True, reply="Usage: /route <text>")
-        try:
-            from picobot.agent.router import debug_scores
-            d = debug_scores(q)
-        except Exception as e:
-            return CommandResult(handled=True, reply=f"/route error: {e}")
-        if not d.get("ok"):
-            return CommandResult(handled=True, reply=str(d.get("error") or "error"))
-        lines = ["Top routes (bm25 vs vec vs score):"]
-        for row in d["top"]:
-            lines.append(f"- {row['workflow']} tool={row['tool']} score={row['score']} (bm25={row['bm25']}, vec={row['vec']}) src={row['source']}")
-        return CommandResult(handled=True, reply="\n".join(lines))
-    if cmd == "/news":
-        q = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
-        if not q:
-            return CommandResult(handled=True, reply="Usage: /news <query>")
-        return CommandResult(handled=False, rewrite_text=f"news: {q}")
+    # Slash commands che devono passare all'orchestrator/router
+    passthrough_commands = {
+        "/news",
+        "/podcast",
+        "/py",
+        "/python",
+        "/file",
+        "/fetch",
+    }
+    if cmd in passthrough_commands:
+        return CommandResult(handled=False)
 
-    arg1 = parts[1] if len(parts) >= 2 else ""
-    argrest = t[len(parts[0]) :].strip() if len(parts) >= 2 else ""
+    if cmd in {"/help", "/start"}:
+        return CommandResult(handled=True, reply=_help_text())
 
-    use_emojis = bool(getattr(getattr(cfg, "ui", None), "use_emojis", True))
+    if cmd in {"/exit", "/quit"}:
+        return CommandResult(handled=True, reply="A presto 👋", exit_requested=True)
 
-    if cmd in ("/help", "/h"):
-        return CommandResult(handled=True, reply=_help_text(use_emojis))
+    if cmd == "/new":
+        requested = parts[1] if len(parts) >= 2 else ""
+        session_id = sanitize_session_id(requested or "session")
+        if not requested:
+            existing = set(session_manager.list())
+            base = "session"
+            idx = 1
+            candidate = f"{base}-{idx}"
+            while candidate in existing:
+                idx += 1
+                candidate = f"{base}-{idx}"
+            session_id = candidate
 
-    if cmd == "/ping":
-        return CommandResult(handled=True, reply="Pong!")
+        _ = session_manager.get(session_id)
+        return CommandResult(
+            handled=True,
+            reply=f"✅ Nuova sessione attiva: {session_id}",
+            new_session_id=session_id,
+        )
 
-    if cmd in ("/exit", "/quit"):
-        return CommandResult(handled=True, exit_now=True, reply="bye 👋")
-
-    # session
     if cmd == "/session":
-        if arg1 == "list":
-            return CommandResult(handled=True, reply="Sessions: " + ", ".join(session_manager.list()))
-        if arg1 == "set" and len(parts) >= 3:
-            sid = parts[2].strip()
-            if not sid:
-                return CommandResult(handled=True, reply="Usage: /session set <id>")
-            return CommandResult(handled=True, new_session_id=sid, reply=f"(session set to {sid})")
-        return CommandResult(handled=True, reply="Usage: /session list | /session set <id>")
+        if len(parts) == 1:
+            return CommandResult(handled=True, reply=_session_info(session))
 
-    # kb
-    if cmd == "/kb":
-        sub = (arg1 or "").strip().lower()
-
-        def _kb_enabled() -> bool:
-            try:
-                st = session.get_state() or {}
-                if isinstance(st, dict) and "kb_enabled" in st:
-                    return bool(st["kb_enabled"])
-            except Exception:
-                pass
-            return True
-
-        def _kb_name() -> str:
-            try:
-                st = session.get_state() or {}
-                if isinstance(st, dict) and st.get("kb_name"):
-                    return str(st["kb_name"])
-            except Exception:
-                pass
-            return "default"
-
-        if not sub:
-            return CommandResult(handled=True, reply="Usage: /kb list | /kb status | /kb set <name> | /kb unset | /kb on | /kb off | /kb ingest <pdf_path> | /kb rebuild")
+        sub = parts[1].lower()
 
         if sub == "list":
-            items = list_kbs(workspace)
-            return CommandResult(handled=True, reply="KBs: " + (", ".join(items) if items else "(none)"))
+            sessions = session_manager.list()
+            if not sessions:
+                return CommandResult(handled=True, reply="Nessuna sessione trovata.")
+            lines = ["Sessioni disponibili:", *[f"- {sid}" for sid in sessions]]
+            return CommandResult(handled=True, reply="\n".join(lines))
 
-        if sub == "status":
-            name = _kb_name()
-            pths = ensure_kb_dirs(workspace, name)
+        if sub == "set" and len(parts) >= 3:
+            new_id = sanitize_session_id(parts[2])
+            _ = session_manager.get(new_id)
             return CommandResult(
                 handled=True,
-                reply=f"""KB={name}
-(enabled={_kb_enabled()})
-source_files={count_source_files(workspace, name)}
-store_files={count_store_files(workspace, name)}
-root={pths.root}""",
+                reply=f"✅ Sessione attiva: {new_id}",
+                new_session_id=new_id,
             )
 
-        if sub == "off":
-            try:
-                session.set_state({"kb_enabled": False})
-            except Exception:
-                pass
-            return CommandResult(handled=True, reply="(kb disabled)")
+        return CommandResult(
+            handled=True,
+            reply="Uso: /session | /session list | /session set <id>",
+        )
 
-        if sub == "on":
-            try:
-                session.set_state({"kb_enabled": True})
-            except Exception:
-                pass
-            return CommandResult(handled=True, reply="(kb enabled)")
+    if cmd in {"/mem", "/memory"}:
+        sub = parts[1].lower() if len(parts) >= 2 else "show"
 
-        if sub == "unset":
-            try:
-                st = session.get_state() or {}
-                if isinstance(st, dict):
-                    st.pop("kb_name", None)
-                    session.set_state(st)
-            except Exception:
-                pass
-            return CommandResult(handled=True, reply="(kb unset)")
+        if sub == "show":
+            return CommandResult(handled=True, reply=_show_memory(session))
 
-        if sub == "set":
-            if len(parts) < 3:
-                return CommandResult(handled=True, reply="Usage: /kb set <name>")
-            name = sanitize_kb_name(parts[2].strip())
-            ensure_kb_dirs(workspace, name)
-            try:
-                session.set_state({"kb_name": name, "kb_enabled": True})
-            except Exception:
-                pass
-            return CommandResult(handled=True, reply=f"(kb set to {name})")
+        if sub == "clear":
+            return CommandResult(handled=True, reply=_clear_memory(session))
 
-        if sub == "ingest":
-            if len(parts) < 3:
-                return CommandResult(handled=True, reply="Usage: /kb ingest <pdf_path>")
-            src_pdf = Path(parts[2].strip()).expanduser()
-            if not src_pdf.exists() or not src_pdf.is_file():
-                return CommandResult(handled=True, reply="Usage: /kb ingest <pdf_path>  (existing PDF file required)")
-            if src_pdf.suffix.lower() != ".pdf":
-                return CommandResult(handled=True, reply="Usage: /kb ingest <pdf_path>  (.pdf required)")
+        return CommandResult(handled=True, reply="Uso: /mem show | /mem clear")
 
-            name = sanitize_kb_name(src_pdf.stem)
-            pths = ensure_kb_dirs(workspace, name)
+    if cmd == "/kb":
+        if len(parts) == 1:
+            return CommandResult(handled=True, reply=_session_info(session))
 
-            try:
-                dst_pdf = copy_source_file(workspace, name, src_pdf)
-                res = ingest_kb(workspace, name)
-            except Exception as e:
-                return CommandResult(handled=True, reply=f"KB ingest error. Check terminal. ({e.__class__.__name__})")
+        sub = parts[1].lower()
 
-            try:
-                session.set_state({"kb_name": name, "kb_enabled": True})
-            except Exception:
-                pass
+        if sub == "list":
+            names = list_kbs(Path(workspace))
+            if not names:
+                return CommandResult(handled=True, reply="Nessuna KB trovata.")
+            lines = ["Knowledge base disponibili:", *[f"- {name}" for name in names]]
+            return CommandResult(handled=True, reply="\n".join(lines))
 
-            return CommandResult(
-                handled=True,
-                reply=f"""(kb ingest done) {name}
-source={dst_pdf}
-chunks={pths.chunks_dir}
-index={pths.index_dir}
-manifest={pths.manifest_path}""",
-            )
+        if sub == "use" and len(parts) >= 3:
+            kb_name = sanitize_session_id(parts[2])
+            ensure_kb_dirs(Path(workspace), kb_name)
+            used = _set_session_kb(session, kb_name)
+            return CommandResult(handled=True, reply=f"✅ KB attiva impostata su: {used}")
 
-        if sub == "rebuild":
-            name = _kb_name()
-            try:
-                res = ingest_kb(workspace, name)
-            except Exception as e:
-                return CommandResult(handled=True, reply=f"KB rebuild error. Check terminal. ({e.__class__.__name__})")
-            pths = ensure_kb_dirs(workspace, name)
-            return CommandResult(
-                handled=True,
-                reply=f"""(kb rebuild done) {name}
-chunks={pths.chunks_dir}
-index={pths.index_dir}
-manifest={pths.manifest_path}""",
-            )
+        if sub == "ingest" and len(parts) >= 3:
+            marker = "/kb ingest"
+            tail = text[len(marker):].strip()
+            pdf_path = Path(tail).expanduser().resolve()
 
-        return CommandResult(handled=True, reply="Usage: /kb list | /kb status | /kb set <name> | /kb unset | /kb on | /kb off | /kb ingest <pdf_path> | /kb rebuild")
+            if not pdf_path.exists() or not pdf_path.is_file():
+                return CommandResult(handled=True, reply=f"File non trovato: {pdf_path}")
 
-    if cmd == "/mem":
+            if pdf_path.suffix.lower() != ".pdf":
+                return CommandResult(handled=True, reply="Puoi indicizzare solo file PDF.")
 
-        global_memory = workspace / "memory" / "MEMORY.md"
-        global_memory.parent.mkdir(parents=True, exist_ok=True)
-        if not global_memory.exists():
-            global_memory.write_text("# Memory\n\n", encoding="utf-8")
+            state = session.get_state()
+            kb_name = str(state.get("kb_name") or cfg.default_kb_name or "default").strip()
+            ensure_kb_dirs(Path(workspace), kb_name)
 
-        if arg1 == "show":
-            try:
-                g = global_memory.read_text(encoding="utf-8") or "(empty)"
-            except Exception:
-                g = "(unreadable)"
-            try:
-                summ = session.summary_file.read_text(encoding="utf-8") or "(empty)"
-            except Exception:
-                summ = "(unreadable)"
-            try:
-                hist_lines = (session.history_file.read_text(encoding="utf-8") or "").splitlines()
-                tail = "\n".join(hist_lines[-120:]).strip() or "(empty)"
-            except Exception:
-                tail = "(unreadable)"
+            copied = copy_source_file(Path(workspace), kb_name, pdf_path)
+            result = ingest_kb(Path(workspace), kb_name)
+
             return CommandResult(
                 handled=True,
                 reply=(
-                    "----- GLOBAL MEMORY.md -----\n"
-                    f"{g}\n\n"
-                    "----- SESSION SUMMARY.md -----\n"
-                    f"{summ}\n\n"
-                    "----- SESSION HISTORY tail -----\n"
-                    f"{tail}\n"
+                    f"✅ PDF ingest completato.\n"
+                    f"KB: {kb_name}\n"
+                    f"Copiato in: {copied}\n"
+                    f"Chunk: {result.chunk_files}\n"
+                    f"Punti indicizzati: {result.indexed_points}"
                 ),
             )
 
-        if arg1 == "clear":
-            global_memory.write_text("# Memory\n\n", encoding="utf-8")
-            try:
-                session.history_file.write_text("# Session History\n\n", encoding="utf-8")
-                session.summary_file.write_text("# Session Summary\n\n", encoding="utf-8")
-            except Exception:
-                pass
-            return CommandResult(handled=True, reply="(memory cleared)")
+        return CommandResult(
+            handled=True,
+            reply="Uso: /kb | /kb list | /kb use <name> | /kb ingest <pdf_path>",
+        )
 
-        return CommandResult(handled=True, reply="Usage: /mem show | /mem clear")
+    if cmd == "/route":
+        query = text[len("/route"):].strip()
+        if not query:
+            return CommandResult(handled=True, reply="Uso: /route <testo>")
 
-    # podcast utility (CLI)
-    if cmd == "/podcast":
-        if arg1 == "list":
-            items = _find_recent_podcasts(cfg, limit=10)
-            if not items:
-                return CommandResult(handled=True, reply="(no podcasts found)")
-            lines = ["Recent podcasts:"]
-            for i, ap in enumerate(items, start=1):
-                lines.append(f"  {i}. {ap}")
-            return CommandResult(handled=True, reply="\n".join(lines))
+        decision = deterministic_route(
+            user_text=query,
+            state_file=session.state_file,
+            default_language=cfg.default_language,
+        )
 
-        if arg1 == "play":
-            # CLI-only; Telegram should just print the path
-            if len(parts) >= 3:
-                ap = Path(parts[2]).expanduser()
-                return CommandResult(handled=True, play_audio_path=str(ap), reply=f"▶️  Playing: {ap}")
-            items = _find_recent_podcasts(cfg, limit=1)
-            if not items:
-                return CommandResult(handled=True, reply="(no podcasts found)")
-            return CommandResult(handled=True, play_audio_path=str(items[0]), reply=f"▶️  Playing latest: {items[0]}")
+        lines = [
+            "Router decision:",
+            f"- action: {decision.action}",
+            f"- name: {decision.name}",
+            f"- score: {decision.score:.4f}",
+            f"- reason: {decision.reason}",
+        ]
 
-        # /podcast it|en <topic>  => rewrite into natural trigger text (NO LLM)
-        rest = argrest.strip()
-        if not rest:
-            return CommandResult(handled=True, reply="Usage: /podcast <topic> | /podcast it <topic> | /podcast en <topic>")
-        sub = rest.split(None, 1)
-        if len(sub) == 2 and sub[0].lower() in ("it", "en"):
-            lng = sub[0].lower()
-            topic = sub[1].strip()
-            if lng == "it":
-                return CommandResult(handled=False, rewrite_text=f"podcast su {topic}")
-            return CommandResult(handled=False, rewrite_text=f"podcast about {topic}")
-        return CommandResult(handled=False, rewrite_text=f"podcast {rest}")
-    # -------------------------
-    # KB utilities (CLI+Telegram)
-    # -------------------------
-    def _kb_name() -> str:
-        # try session state first
-        try:
-            st = session.get_state() or {}
-            if isinstance(st, dict) and st.get("kb_name"):
-                return str(st["kb_name"])
-        except Exception:
-            pass
-        return str(getattr(getattr(cfg, "retrieval", None), "default_kb", "default") or "default")
+        if decision.candidates:
+            lines.append("")
+            lines.append("Top candidates:")
+            for idx, cand in enumerate(decision.candidates[:5], start=1):
+                lines.append(
+                    f"{idx}. {cand.record.id} "
+                    f"(name={cand.record.name}, "
+                    f"final={cand.final_score:.4f}, "
+                    f"vector={cand.vector_score:.4f}, "
+                    f"lexical={cand.lexical_score:.4f})"
+                )
 
-    def _kb_root(name: str) -> Path:
-        return (workspace / "docs" / name).resolve()
+        return CommandResult(handled=True, reply="\n".join(lines))
 
-    def _kb_ensure(name: str) -> Path:
-        root = _kb_root(name)
-        (root / "kb").mkdir(parents=True, exist_ok=True)
-        (root / "source").mkdir(parents=True, exist_ok=True)
-        return root
-
-    if cmd == "/kb":
-        sub = (arg1 or "").strip().lower()
-        if not sub:
-            return CommandResult(
-                handled=True,
-                reply="Usage: /kb list | /kb status | /kb set <name> | /kb unset | /kb on | /kb off | /kb ingest | /kb rebuild",
-            )
-
-        if sub == "list":
-            docs = (workspace / "docs")
-            docs.mkdir(parents=True, exist_ok=True)
-            items = sorted([p.name for p in docs.iterdir() if p.is_dir()])
-            return CommandResult(handled=True, reply="KBs: " + (", ".join(items) if items else "(none)"))
-
-        if sub == "status":
-            name = _kb_name()
-            root = _kb_ensure(name)
-            src = root / "source"
-            store = root / "kb"
-            src_n = len([p for p in src.rglob("*") if p.is_file()])
-            store_n = len([p for p in store.rglob("*") if p.is_file()])
-            return CommandResult(
-                handled=True,
-                reply=f"KB={name}\n  source_files={src_n}\n  store_files={store_n}\n  root={root}",
-            )
-
-        if sub == "set" and len(parts) >= 3:
-            name = parts[2].strip()
-            if not name:
-                return CommandResult(handled=True, reply="Usage: /kb set <name>")
-            _kb_ensure(name)
-            try:
-                session.set_state({"kb_name": name})
-            except Exception:
-                pass
-            return CommandResult(handled=True, reply=f"(kb set to {name})")
-
-        if sub in ("ingest", "rebuild"):
-            name = _kb_name()
-            root = _kb_ensure(name)
-            source_dir = root / "source"
-            store_dir = root / "kb"
-            if sub == "rebuild":
-                # hard rebuild: wipe store
-                try:
-                    for fp in store_dir.rglob("*"):
-                        if fp.is_file():
-                            fp.unlink(missing_ok=True)
-                except Exception:
-                    pass
-            # run ingest (local deterministic)
-            try:
-                from picobot.retrieval.ingest import ingest_dir
-                ingest_dir(source_dir=source_dir, store_dir=store_dir)
-            except Exception as e:
-                # errors should be terminal-only; CLI will show a short message
-                return CommandResult(handled=True, reply=f"KB ingest error. Check terminal. ({e.__class__.__name__})")
-            return CommandResult(handled=True, reply=f"(kb {sub} done) {name}")
-
-        return CommandResult(handled=True, reply="Usage: /kb list | /kb status | /kb set <name> | /kb unset | /kb on | /kb off | /kb ingest | /kb rebuild")
-
-    # -------------------------
-    # Sandbox helpers (force tool routing via rewrite)
-    # -------------------------
-    if cmd == "/py":
-        code = (argrest or "").strip()
-        if not code:
-            return CommandResult(handled=True, reply="Usage: /py <python code>")
-        payload = {"cwd": str(workspace), "code": code}
-        return CommandResult(handled=False, rewrite_text="tool sandbox_python " + json.dumps(payload, ensure_ascii=False))
-
-    if cmd == "/file":
-        rest = (argrest or "").strip()
-        if not rest:
-            return CommandResult(handled=True, reply="Usage: /file preview <path>")
-        sub = rest.split(None, 1)
-        if len(sub) != 2 or sub[0].lower() != "preview":
-            return CommandResult(handled=True, reply="Usage: /file preview <path>")
-        path = sub[1].strip()
-        payload = {"root": str(workspace), "path": path}
-        return CommandResult(handled=False, rewrite_text="tool sandbox_file " + json.dumps(payload, ensure_ascii=False))
-
-
-    return CommandResult(handled=True, reply="Unknown command. Type /help")
+    return CommandResult(
+        handled=True,
+        reply="Comando non riconosciuto. Usa /help.",
+    )

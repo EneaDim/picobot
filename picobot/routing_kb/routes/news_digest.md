@@ -1,34 +1,36 @@
+---
+id: workflow:news_digest
+kind: workflow
+name: news_digest
+title: News Digest
+description: Ricerca notizie recenti sul web e produce una sintesi strutturata con fonti multiple.
+capabilities:
+  - news search
+  - digest
+  - source aggregation
+  - current events summary
+limitations:
+  - richiede rete
+  - dipende dalla disponibilità delle fonti
+tags:
+  - news
+  - digest
+  - web
+  - current events
+  - latest news
+example_queries:
+  - /news intelligenza artificiale europa
+  - news: intelligenza artificiale europa
+  - fammi una rassegna stampa su energia e gas
+  - ultime notizie su openai e regolamentazione ue
+  - cosa è successo oggi su bitcoin?
+requires_kb: false
+requires_network: true
+enabled: true
+priority: 100
+---
+
 # news_digest
 
-## Intent
-Rassegna notizie / digest:
-- cercare sul web via SearXNG (web_search)
-- fetch pagine via sandbox_web (whitelist)
-- summarizer con output 6–8 bullet + link
-Opzionale: TTS/podcast.
-
-## Strong signals
-- prefisso: "/news ..." o "news: ..."
-- parole: notizie, news, rassegna, digest, aggiornamenti, “cosa è successo”
-- richieste “ultime notizie su X”
-
-## Italiano: esempi
-- /news intelligenza artificiale europa
-- news: intelligenza artificiale europa
-- fammi una rassegna stampa su energia e gas
-- ultime notizie su openai e regolamentazione UE
-- dammi un digest di 7 bullet con link su: elezioni, economia, inflazione
-- cosa è successo oggi su bitcoin?
-- notizie recenti su Apple in Europa
-
-## English: examples
-- /news AI regulation Europe
-- news: AI regulation Europe
-- give me a news digest with links about inflation
-- latest news on OpenAI policy in the EU
-- what happened today about bitcoin?
-
-## Negative examples
-- domande su documenti locali (kb_query)
-- riassunto youtube
-- tool python/file/web espliciti
+Questa route è specifica per attualità, ultime notizie, rassegne stampa
+e digest di news provenienti dal web.

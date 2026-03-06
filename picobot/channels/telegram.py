@@ -1,6 +1,23 @@
 from __future__ import annotations
 
-import re
+# Telegram channel con supporto:
+# - testo
+# - PDF ingest
+# - voice/audio -> STT tool -> orchestrator -> opzionale TTS tool
+#
+# Principio architetturale:
+# - STT e TTS restano tool reali
+# - Telegram non "fa magia"
+# - il canale coordina la pipeline, ma usa il registry tool dell'orchestrator
+#
+# Flusso voice:
+# 1. scarica audio locale
+# 2. esegue tool "stt"
+# 3. opzionalmente mostra transcript
+# 4. passa transcript all'orchestrator
+# 5. restituisce testo
+# 6. opzionalmente esegue tool "tts" sulla risposta e invia audio
+
 import asyncio
 import hashlib
 import json
@@ -11,82 +28,106 @@ from typing import Any
 try:
     from telegram import Update
     from telegram.constants import ChatAction
-    from telegram.ext import Application, ContextTypes, MessageHandler, CommandHandler, filters
+    from telegram.ext import (
+        Application,
+        CommandHandler,
+        ContextTypes,
+        MessageHandler,
+        filters,
+    )
 except Exception:  # pragma: no cover
     Update = Any  # type: ignore
     ChatAction = Any  # type: ignore
     Application = None  # type: ignore
+    CommandHandler = Any  # type: ignore
     ContextTypes = Any  # type: ignore
     MessageHandler = Any  # type: ignore
-    CommandHandler = Any  # type: ignore
     filters = None  # type: ignore
 
 from picobot.agent.orchestrator import Orchestrator
-from picobot.agent.prompts import detect_language
 from picobot.config.schema import Config
+from picobot.retrieval.ingest import ingest_kb
+from picobot.retrieval.store import copy_source_file, ensure_kb_dirs
 from picobot.session.manager import SessionManager, sanitize_session_id
-from picobot.tools.retrieval import make_kb_ingest_pdf_tool
 from picobot.ui import handle_command
 
 
+# -----------------------------------------------------------------------------
+# Persistence helpers
+# -----------------------------------------------------------------------------
+
 @dataclass
 class TelegramSessionMap:
+    """
+    Mappa chat_id -> session_id persistita su JSON.
+    """
     path: Path
 
     def load(self) -> dict[str, str]:
         try:
             if self.path.exists():
-                return json.loads(self.path.read_text(encoding="utf-8"))
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items()}
         except Exception:
             pass
         return {}
 
-    def save(self, m: dict[str, str]) -> None:
+    def save(self, data: dict[str, str]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(m, indent=2), encoding="utf-8")
+        self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def get_session_for_chat(self, chat_id: str) -> str:
-        m = self.load()
-        return m.get(chat_id, f"tg-{chat_id}")
+    def get(self, chat_id: str) -> str:
+        mapping = self.load()
+        return mapping.get(chat_id, f"tg-{chat_id}")
 
-    def set_session_for_chat(self, chat_id: str, session_id: str) -> str:
-        m = self.load()
+    def set(self, chat_id: str, session_id: str) -> str:
         sid = sanitize_session_id(session_id)
-        m[chat_id] = sid
-        self.save(m)
+        mapping = self.load()
+        mapping[chat_id] = sid
+        self.save(mapping)
         return sid
-
-    def list_chats(self) -> dict[str, str]:
-        return self.load()
 
 
 @dataclass
 class TelegramDedupMap:
+    """
+    Mappa per evitare ingest multipli dello stesso PDF.
+    """
     path: Path
 
-    def load(self) -> dict[str, Any]:
+    def load(self) -> dict[str, dict[str, Any]]:
         try:
             if self.path.exists():
-                return json.loads(self.path.read_text(encoding="utf-8"))
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
         except Exception:
             pass
         return {}
 
-    def save(self, d: dict[str, Any]) -> None:
+    def save(self, data: dict[str, dict[str, Any]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(d, indent=2), encoding="utf-8")
+        self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def has_pdf(self, chat_id: str, key: str) -> bool:
-        d = self.load()
-        return bool(d.get(chat_id, {}).get("pdf", {}).get(key))
+    def has(self, chat_id: str, digest: str) -> bool:
+        data = self.load()
+        return bool(data.get(chat_id, {}).get(digest))
 
-    def record_pdf(self, chat_id: str, key: str, meta: dict[str, Any]) -> None:
-        d = self.load()
-        d.setdefault(chat_id, {}).setdefault("pdf", {})[key] = meta
-        self.save(d)
+    def put(self, chat_id: str, digest: str, meta: dict[str, Any]) -> None:
+        data = self.load()
+        data.setdefault(chat_id, {})[digest] = meta
+        self.save(data)
 
+
+# -----------------------------------------------------------------------------
+# Utility
+# -----------------------------------------------------------------------------
 
 def _sha256_file(path: Path) -> str:
+    """
+    Hash del file per dedup PDF.
+    """
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -94,66 +135,49 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-async def _run_subprocess(cmd: list[str], timeout_s: float) -> tuple[int, str, str]:
-    p = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        out_b, err_b = await asyncio.wait_for(p.communicate(), timeout=timeout_s)
-    except asyncio.TimeoutError:
-        try:
-            p.kill()
-        except Exception:
-            pass
-        raise RuntimeError(f"Command timed out after {timeout_s:.0f}s: {' '.join(cmd[:4])} ...")
-    out = (out_b or b"").decode("utf-8", errors="replace")
-    err = (err_b or b"").decode("utf-8", errors="replace")
-    return int(p.returncode or 0), out, err
+def _maybe_bool(value: Any, default: bool = False) -> bool:
+    """
+    Converte in bool con fallback robusto.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in {"1", "true", "yes", "y", "on"}:
+            return True
+        if low in {"0", "false", "no", "n", "off"}:
+            return False
+    return bool(value)
 
 
 class TelegramChannel:
+    """
+    Canale Telegram principale.
+    """
 
-    async def _maybe_set_commands(self):
-        """Best-effort Telegram command suggestions (/). Never crash."""
-        try:
-            cmds = [
-                ("help", "Show help"),
-                ("ping", "Health check"),
-                ("session", "Show / switch session"),
-                ("new", "Create new session"),
-                ("memory", "Memory ops (use: /memory clear)"),
-                ("podcast", "Generate a podcast (topic after command)"),
-                ("exit", "Close the chat (CLI only)"),
-            ]
-            bot = getattr(self, "bot", None) or getattr(getattr(self, "app", None), "bot", None)
-            if bot is None:
-                return
-            set_cmds = getattr(bot, "set_my_commands", None)
-            if not callable(set_cmds):
-                return
-            # support both tuple-list and BotCommand-like objects
-            try:
-                await set_cmds(cmds)
-            except Exception:
-                # python-telegram-bot prefers list[BotCommand]
-                try:
-                    from telegram import BotCommand  # type: ignore
-                    await set_cmds([BotCommand(c, d) for c, d in cmds])
-                except Exception:
-                    return
-        except Exception:
-            return
     def __init__(self, cfg: Config, sm: SessionManager, orch: Orchestrator, build_app: bool = True) -> None:
         self.cfg = cfg
         self.sm = sm
         self.orch = orch
-        ws = Path(cfg.workspace).expanduser().resolve()
-        self.map = TelegramSessionMap(ws / "channels" / "telegram" / "session_map.json")
-        self.dedup = TelegramDedupMap(ws / "channels" / "telegram" / "dedup.json")
-        self.inbox_dir = ws / "channels" / "telegram" / "inbox"
-        self.inbox_dir.mkdir(parents=True, exist_ok=True)
+
+        self.workspace = Path(cfg.workspace).expanduser().resolve()
+        self.workspace.mkdir(parents=True, exist_ok=True)
+
+        self.session_map = TelegramSessionMap(
+            self.workspace / "channels" / "telegram" / "session_map.json"
+        )
+        self.dedup_map = TelegramDedupMap(
+            self.workspace / "channels" / "telegram" / "pdf_dedup.json"
+        )
+
+        base_inbox = self.workspace / "channels" / "telegram" / "inbox"
+        base_inbox.mkdir(parents=True, exist_ok=True)
+        self.inbox_dir = base_inbox
+
+        self.audio_dir = self.workspace / "channels" / "telegram" / "audio"
+        self.audio_dir.mkdir(parents=True, exist_ok=True)
 
         if not cfg.telegram.bot_token:
             raise ValueError("telegram.bot_token is empty")
@@ -162,577 +186,683 @@ class TelegramChannel:
         if build_app:
             if Application is None or filters is None:
                 raise ImportError(
-                    "python-telegram-bot is required for TelegramChannel. Install: pip install python-telegram-bot"
+                    "python-telegram-bot non installato. Installa: pip install python-telegram-bot"
                 )
+
             self.app = Application.builder().token(cfg.telegram.bot_token).build()
+            self._register_handlers()
 
-            # commands
-            self.app.add_handler(CommandHandler("start", self._cmd_start))
-            self.app.add_handler(CommandHandler("help", self._cmd_help))
-            self.app.add_handler(CommandHandler("session", self._cmd_session))
+    # ------------------------------------------------------------------
+    # Setup
+    # ------------------------------------------------------------------
 
-            # messages
-            self.app.add_handler(MessageHandler(filters.COMMAND, self._on_command), group=1)
-            self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text))
-            self.app.add_handler(
-                MessageHandler(filters.Document.MimeType("application/pdf"), self._on_pdf_document)
-            )
-            self.app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._on_voice_or_audio))
+    def _register_handlers(self) -> None:
+        """
+        Registra gli handler Telegram.
+        """
+        assert self.app is not None
 
-    def _dbg_enabled(self) -> bool:
+        self.app.add_handler(CommandHandler("start", self._cmd_start))
+        self.app.add_handler(CommandHandler("help", self._cmd_help))
+        self.app.add_handler(CommandHandler("session", self._cmd_session))
+
+        # Slash commands generici.
+        self.app.add_handler(MessageHandler(filters.COMMAND, self._on_command), group=1)
+
+        # PDF.
+        self.app.add_handler(
+            MessageHandler(filters.Document.PDF, self._on_pdf_document),
+            group=2,
+        )
+
+        # Voice notes e audio files.
+        self.app.add_handler(
+            MessageHandler(filters.VOICE | filters.AUDIO, self._on_voice_or_audio),
+            group=2,
+        )
+
+        # Testo normale.
+        self.app.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text),
+            group=3,
+        )
+
+    async def _set_my_commands(self) -> None:
+        """
+        Suggerimenti slash command nel client Telegram.
+        """
+        if self.app is None:
+            return
+
+        cmds = [
+            ("help", "Mostra aiuto"),
+            ("session", "Mostra o cambia sessione"),
+            ("new", "Crea nuova sessione"),
+            ("kb", "Gestisci KB"),
+            ("route", "Debug router"),
+        ]
+
         try:
-            return bool(getattr(self.cfg.telegram, "debug_terminal", False) or getattr(self.cfg.debug, "enabled", False))
+            bot = self.app.bot
+            await bot.set_my_commands(cmds)
         except Exception:
-            return False
+            return
 
-    def _dbg(self, s: str) -> None:
-        if self._dbg_enabled():
-            print(f"[telegram] {s}", flush=True)
+    # ------------------------------------------------------------------
+    # Config helpers
+    # ------------------------------------------------------------------
 
-    def _ui(self, text: str) -> str:
-        if self.cfg.ui.use_emojis:
-            return text
-        return text.replace("🧭 ", "").replace("🔎 ", "").replace("💭 ", "").replace("✅ ", "")
-
-    def _kb_name_for_chat(self, chat_id: str) -> str:
-        kb_per_chat = bool(getattr(self.cfg.telegram, "kb_per_chat", True))
-        if kb_per_chat:
-            return f"kb_{chat_id}"
-        return getattr(self.cfg, "default_kb_name", "default")
+    def _telegram_cfg_bool(self, name: str, default: bool = False) -> bool:
+        """
+        Legge un flag bool dal blocco telegram, supportando anche extra fields.
+        """
+        tg = getattr(self.cfg, "telegram", None)
+        if tg is None:
+            return default
+        return _maybe_bool(getattr(tg, name, default), default=default)
 
     def _stt_enabled(self) -> bool:
-        if hasattr(self.cfg.telegram, "stt_auto"):
-            return bool(getattr(self.cfg.telegram, "stt_auto"))
-        return bool(getattr(self.cfg.telegram, "voice_stt_enabled", True))
+        """
+        Flag effettivo per pipeline voice->text.
+        """
+        return (
+            self._telegram_cfg_bool("stt_auto", default=True)
+            or self._telegram_cfg_bool("voice_stt_enabled", default=False)
+        )
 
-    def _pdf_auto_ingest(self) -> bool:
-        return bool(getattr(self.cfg.telegram, "pdf_auto_ingest", True))
+    def _tts_auto_reply_enabled(self) -> bool:
+        """
+        Opzione facoltativa per rispondere anche con audio sintetizzato.
+        """
+        return self._telegram_cfg_bool("tts_auto_reply", default=False)
 
-    def _echo_transcript(self) -> bool:
-        if hasattr(self.cfg.telegram, "send_transcript_flag"):
-            return bool(getattr(self.cfg.telegram, "send_transcript_flag"))
-        return bool(getattr(self.cfg.telegram, "echo_transcript", False))
+    def _echo_transcript_enabled(self) -> bool:
+        """
+        Se attivo, invia anche il transcript in chat.
+        """
+        return (
+            self._telegram_cfg_bool("send_transcript_flag", default=False)
+            or self._telegram_cfg_bool("echo_transcript", default=False)
+        )
 
     def _max_voice_seconds(self) -> int:
-        v = getattr(self.cfg.telegram, "max_voice_seconds", 240)
+        """
+        Durata massima accettata per note vocali/audio.
+        """
         try:
-            return int(v)
+            return int(getattr(self.cfg.telegram, "max_voice_seconds", 240) or 240)
         except Exception:
             return 240
 
+    # ------------------------------------------------------------------
+    # Small helpers
+    # ------------------------------------------------------------------
+
+    def _kb_name_for_chat(self, chat_id: str) -> str:
+        """
+        Namespace KB per chat Telegram.
+        """
+        if bool(getattr(self.cfg.telegram, "kb_per_chat", True)):
+            return f"kb_{sanitize_session_id(chat_id)}"
+        return sanitize_session_id(self.cfg.default_kb_name or "default")
+
+    def _session_for_chat(self, chat_id: str):
+        """
+        Sessione corrente della chat.
+        """
+        sid = self.session_map.get(chat_id)
+        return self.sm.get(sid)
+
     async def _typing(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Invio stato "typing".
+        """
         try:
             if update.effective_chat:
                 await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         except Exception:
             pass
 
-    async def _transient(self, msg, text: str) -> Any:
+    async def _record_voice(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Invio stato "record voice" / upload audio dove disponibile.
+        """
         try:
-            return await msg.reply_text(self._ui(text))
+            if update.effective_chat:
+                await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.RECORD_VOICE)
+        except Exception:
+            pass
+
+    async def _status_message(self, msg, text: str):
+        """
+        Messaggio temporaneo di stato.
+        """
+        try:
+            return await msg.reply_text(text)
         except Exception:
             return None
 
-    async def _transient_set(self, m: Any, text: str) -> None:
-        if not m:
+    async def _status_edit(self, status_msg, text: str) -> None:
+        """
+        Aggiorna il messaggio di stato.
+        """
+        if not status_msg:
             return
         try:
-            await m.edit_text(self._ui(text))
+            await status_msg.edit_text(text)
         except Exception:
             pass
 
-    async def _transient_clear(self, m: Any) -> None:
-        if not m:
-            return
-        await asyncio.sleep(1.0)
+    async def _safe_reply(self, msg, text: str) -> None:
+        """
+        Reply robusto.
+        """
         try:
-            await m.delete()
+            await msg.reply_text(text)
         except Exception:
             pass
+
+    async def _safe_reply_audio(self, msg, file_path: Path, caption: str = "") -> None:
+        """
+        Invia un file audio. Se Telegram non lo accetta come audio, fallback a document.
+        """
+        try:
+            if file_path.suffix.lower() in {".mp3", ".wav", ".m4a"}:
+                with file_path.open("rb") as f:
+                    await msg.reply_audio(audio=f, caption=caption or None)
+                return
+        except Exception:
+            pass
+
+        try:
+            with file_path.open("rb") as f:
+                await msg.reply_document(document=f, filename=file_path.name, caption=caption or None)
+        except Exception:
+            pass
+
+    async def _run_tool(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """
+        Esegue un tool dal registry dell'orchestrator.
+
+        Manteniamo STT/TTS come tool veri, non funzioni speciali del canale.
+        """
+        resolved = self.orch.tools.resolve_name(tool_name)
+        tool = self.orch.tools.get(resolved)
+        model = tool.validate(args or {})
+        return await tool.handler(model)
+
+    def _ensure_chat_session_state(self, chat_id: str):
+        """
+        Garantisce che la sessione Telegram abbia una KB assegnata.
+        """
+        session = self._session_for_chat(chat_id)
+        if not session.get_state().get("kb_name"):
+            kb_name = self._kb_name_for_chat(chat_id)
+            ensure_kb_dirs(self.workspace, kb_name)
+            session.set_state({"kb_name": kb_name, "kb_enabled": True})
+        return session
+
+    # ------------------------------------------------------------------
+    # Command handlers
+    # ------------------------------------------------------------------
 
     async def _cmd_start(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        chat = update.effective_chat
+        """
+        Onboarding iniziale.
+        """
         msg = update.effective_message
-        if not chat or not msg:
+        chat = update.effective_chat
+        if not msg or not chat:
             return
-        self._dbg(f"/start chat_id={chat.id}")
-        await self._typing(update, ctx)
-        await msg.reply_text(
-            "✅ Picobot is running.\n"
-            "Send me a message to chat.\n"
-            "Send a PDF to ingest into the KB for this chat.\n"
-            "Send a voice note to transcribe (if enabled).\n\n"
-            "Commands:\n"
-            "/help\n"
-            "/session list\n"
-            "/session set <id>\n"
+
+        session = self._session_for_chat(str(chat.id))
+        kb_name = self._kb_name_for_chat(str(chat.id))
+
+        ensure_kb_dirs(self.workspace, kb_name)
+        session.set_state({"kb_name": kb_name, "kb_enabled": True})
+
+        text = (
+            "👋 Ciao, sono Picobot.\n\n"
+            "Cosa puoi fare qui:\n"
+            "• chattare normalmente\n"
+            "• caricare PDF nella KB di questa chat\n"
+            "• mandare note vocali se STT è attivo\n"
+            "• usare comandi come /help, /session, /kb, /route\n\n"
+            f"Sessione attuale: {session.session_id}\n"
+            f"KB attiva: {kb_name}"
         )
+        await self._safe_reply(msg, text)
 
     async def _cmd_help(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        chat = update.effective_chat
+        """
+        Help rapido.
+        """
         msg = update.effective_message
-        if not chat or not msg:
+        chat = update.effective_chat
+        if not msg or not chat:
             return
-        self._dbg(f"/help chat_id={chat.id}")
-        await self._typing(update, ctx)
-        await msg.reply_text("/help\n/session list\n/session set <id>\n")
+
+        session = self._session_for_chat(str(chat.id))
+        cmd = handle_command(
+            "/help",
+            session=session,
+            session_manager=self.sm,
+            cfg=self.cfg,
+            workspace=self.workspace,
+        )
+        extra = (
+            "\n\nVoice:\n"
+            "• invia una nota vocale per trascriverla\n"
+            "• se tts_auto_reply è attivo, posso rispondere anche con audio"
+        )
+        await self._safe_reply(msg, cmd.reply + extra)
 
     async def _cmd_session(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._typing(update, ctx)
-        chat = update.effective_chat
+        """
+        Session info / set dedicato.
+        """
         msg = update.effective_message
-        if not chat or not msg:
-            return
-        chat_id = str(chat.id)
-        self._dbg(f"/session chat_id={chat_id} args={getattr(ctx,'args',None)}")
-
-        args = ctx.args or []
-        if not args:
-            sid = self.map.get_session_for_chat(chat_id)
-            await msg.reply_text(f"Current session: {sid}")
+        chat = update.effective_chat
+        if not msg or not chat:
             return
 
-        if args[0] == "list":
-            sessions = self.sm.list()
-            mapping = self.map.list_chats()
-            lines = ["Sessions:", *(f"- {s}" for s in sessions)]
-            lines.append("")
-            lines.append("Telegram chat mappings:")
-            for k, v in sorted(mapping.items()):
-                lines.append(f"- {k} -> {v}")
-            await msg.reply_text("\n".join(lines).strip())
-            return
+        raw = msg.text or "/session"
+        session = self._session_for_chat(str(chat.id))
 
-        if args[0] == "set" and len(args) >= 2:
-            sid = self.map.set_session_for_chat(chat_id, args[1])
-            _ = self.sm.get(sid)
-            await msg.reply_text("✅ Session set to: " + sid)
-            return
+        cmd = handle_command(
+            raw,
+            session=session,
+            session_manager=self.sm,
+            cfg=self.cfg,
+            workspace=self.workspace,
+        )
 
-        await msg.reply_text("Usage: /session list | /session set <id>")
+        if cmd.new_session_id:
+            self.session_map.set(str(chat.id), cmd.new_session_id)
+
+        await self._safe_reply(msg, cmd.reply)
+
+    # ------------------------------------------------------------------
+    # Generic slash commands
+    # ------------------------------------------------------------------
+
     async def _on_command(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        chat = update.effective_chat
+        """
+        Qualsiasi slash command non gestito da un handler dedicato
+        passa qui e usa il command layer condiviso.
+        """
         msg = update.effective_message
-        if not chat or not msg:
+        chat = update.effective_chat
+        if not msg or not chat:
             return
 
-        chat_id = str(chat.id)
         raw = (msg.text or "").strip()
-        if not raw.startswith("/"):
+        if not raw:
             return
 
-        # Let explicit /start keep working (it provides onboarding text)
-        cmd = raw.split()[0].lower()
-        if cmd in ("/start",):
+        if raw.split()[0].lower() in {"/start", "/help", "/session"}:
             return
 
-        self._dbg(f"COMMAND chat_id={chat_id} text={raw!r}")
+        session = self._session_for_chat(str(chat.id))
 
-        # Resolve current session for this chat
-        session_id = self.map.get_session_for_chat(chat_id)
-        session = self.sm.get(session_id)
+        cmd = handle_command(
+            raw,
+            session=session,
+            session_manager=self.sm,
+            cfg=self.cfg,
+            workspace=self.workspace,
+        )
 
-        cr = handle_command(raw, session=session, session_manager=self.sm)
-        if cr.handled:
-            if cr.new_session_id:
-                # Persist mapping for this chat too
-                self.map.set_session_for_chat(chat_id, cr.new_session_id)
-                _ = self.sm.get(cr.new_session_id)
-            await self._typing(update, ctx)
-            await msg.reply_text(self._ui(cr.reply))
+        if cmd.new_session_id:
+            self.session_map.set(str(chat.id), cmd.new_session_id)
+
+        if cmd.handled:
+            await self._safe_reply(msg, cmd.reply)
             return
 
-        await self._typing(update, ctx)
-        await msg.reply_text(self._ui("Unknown command. Try /help"))
-        return
+        await self._safe_reply(msg, "Comando non riconosciuto. Usa /help.")
 
+    # ------------------------------------------------------------------
+    # Text chat
+    # ------------------------------------------------------------------
 
     async def _on_text(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        chat = update.effective_chat
+        """
+        Messaggio testuale normale -> orchestrator.
+        """
         msg = update.effective_message
-        if not chat or not msg:
+        chat = update.effective_chat
+        if not msg or not chat:
             return
 
-        chat_id = str(chat.id)
-        user_text = (msg.text or "").strip()
-        if not user_text:
+        text = (msg.text or "").strip()
+        if not text:
             return
 
-        self._dbg(f"TEXT chat_id={chat_id} len={len(user_text)}")
-
-        session_id = self.map.get_session_for_chat(chat_id)
-        session = self.sm.get(session_id)
-        session.set_state({"kb_name": self._kb_name_for_chat(chat_id)})
+        session = self._ensure_chat_session_state(str(chat.id))
 
         await self._typing(update, ctx)
+        status_msg = await self._status_message(msg, "🧭 Sto capendo la richiesta…")
 
-        status_msg = None
-        last_status = None
+        async def status_cb(text: str) -> None:
+            await self._status_edit(status_msg, text)
 
-        async def status_cb(s: str) -> None:
-            nonlocal status_msg, last_status
-            s = self._ui(s)
-            if last_status is not None and s != last_status:
-                await asyncio.sleep(1.0)
-            last_status = s
+        try:
+            result = await self.orch.one_turn(
+                session=session,
+                user_text=text,
+                status=status_cb,
+            )
+        except Exception as e:
+            await self._status_edit(status_msg, "⚠️ Errore interno")
+            await self._safe_reply(msg, f"Errore interno: {e}")
+            return
+
+        await self._status_edit(status_msg, "✅ Fatto")
+        await self._safe_reply(msg, result.content)
+
+        if result.audio_path:
             try:
-                if status_msg is None:
-                    status_msg = await msg.reply_text(s)
-                else:
-                    await status_msg.edit_text(s)
+                path = Path(result.audio_path)
+                if path.exists() and path.is_file():
+                    await self._safe_reply_audio(msg, path)
             except Exception:
                 pass
 
-        try:
-            res = await self.orch.one_turn(session, user_text, status=status_cb)
-            # podcast: send audio attachment if present
-            ap = getattr(res, 'audio_path', None)
-            if ap:
-                try:
-                    from pathlib import Path as _P
-                    fp = _P(str(ap)).expanduser()
-                    if fp.exists():
-                        with fp.open('rb') as f:
-                            await msg.reply_audio(audio=f)
-                except Exception:
-                    pass
-            await msg.reply_text(res.content or '(empty)')
-        except Exception as e:
-            self._dbg(f"TEXT error: {e!r}")
-            await msg.reply_text(f"⚠️ Error: {e}")
-        finally:
-            await asyncio.sleep(1.0)
-            if status_msg:
-                try:
-                    await status_msg.delete()
-                except Exception:
-                    pass
+    # ------------------------------------------------------------------
+    # PDF ingest
+    # ------------------------------------------------------------------
 
     async def _on_pdf_document(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        chat = update.effective_chat
+        """
+        Upload PDF -> inbox -> KB source -> rebuild ingest.
+        """
         msg = update.effective_message
-        if not chat or not msg:
-            return
-        if not self._pdf_auto_ingest():
-            self._dbg("PDF received but pdf_auto_ingest disabled")
+        chat = update.effective_chat
+        if not msg or not chat or not msg.document:
             return
 
-        doc = getattr(msg, "document", None)
-        if not doc or (getattr(doc, "mime_type", "") or "").lower() != "application/pdf":
-            return
-
+        doc = msg.document
         chat_id = str(chat.id)
-        self._dbg(f"PDF chat_id={chat_id} file_id={getattr(doc,'file_id',None)} name={getattr(doc,'file_name',None)}")
 
-        session_id = self.map.get_session_for_chat(chat_id)
-        session = self.sm.get(session_id)
         kb_name = self._kb_name_for_chat(chat_id)
-        session.set_state({"kb_name": kb_name})
+        ensure_kb_dirs(self.workspace, kb_name)
+
+        session = self._session_for_chat(chat_id)
+        session.set_state({"kb_name": kb_name, "kb_enabled": True})
 
         await self._typing(update, ctx)
+        status_msg = await self._status_message(msg, "📥 Ricevuto PDF, lo scarico…")
 
-        status = await self._transient(msg, "🔎 Downloading PDF…")
-
-        file_name = (getattr(doc, "file_name", None) or f"{doc.file_id}.pdf").strip()
-        safe_name = sanitize_session_id(file_name).replace("-", "_")
-        if not safe_name.lower().endswith(".pdf"):
-            safe_name += ".pdf"
-
-        dest_dir = self.inbox_dir / chat_id / "pdf"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest_path = dest_dir / safe_name
+        safe_name = sanitize_session_id(Path(doc.file_name or "upload.pdf").stem) + ".pdf"
+        local_path = self.inbox_dir / f"{chat_id}_{safe_name}"
 
         try:
             tg_file = await ctx.bot.get_file(doc.file_id)
-            await tg_file.download_to_drive(custom_path=str(dest_path))
+            await tg_file.download_to_drive(custom_path=str(local_path))
         except Exception as e:
-            await self._transient_set(status, "⚠️ Download failed.")
-            await self._transient_clear(status)
-            await msg.reply_text(f"⚠️ Could not download PDF: {e}")
-            self._dbg(f"PDF download error: {e!r}")
+            await self._status_edit(status_msg, "⚠️ Download fallito")
+            await self._safe_reply(msg, f"Download PDF fallito: {e}")
             return
 
-        try:
-            size = int(getattr(doc, "file_size", 0) or dest_path.stat().st_size)
-        except Exception:
-            size = 0
-
-        try:
-            sha = _sha256_file(dest_path)
-        except Exception as e:
-            await self._transient_set(status, "⚠️ Hash failed.")
-            await self._transient_clear(status)
-            await msg.reply_text(f"⚠️ Could not hash PDF for dedup: {e}")
-            self._dbg(f"PDF hash error: {e!r}")
-            return
-
-        dedup_key = f"{sha}:{size}"
-        if self.dedup.has_pdf(chat_id, dedup_key):
-            await self._transient_set(status, "✅ Already ingested (dedup).")
-            await self._transient_clear(status)
-            await msg.reply_text("✅ PDF already ingested for this chat. (dedup hit)")
-            self._dbg("PDF dedup hit")
-            return
-
-        await self._transient_set(status, "🧠 Ingesting into KB…")
-
-        tool = make_kb_ingest_pdf_tool(self.orch.docs_root)
-        try:
-            model = tool.validate(
-                {
-                    "kb_name": kb_name,
-                    "pdf_path": str(dest_path),
-                    "doc_name": Path(file_name).stem or "document",
-                    "chunk_chars": int(getattr(self.cfg.retrieval, "chunk_chars", 900)),
-                    "overlap": int(getattr(self.cfg.retrieval, "chunk_overlap", 120)),
-                }
+        digest = _sha256_file(local_path)
+        if self.dedup_map.has(chat_id, digest):
+            await self._status_edit(status_msg, "ℹ️ PDF già presente")
+            await self._safe_reply(
+                msg,
+                f"Questo PDF risulta già ingestato per la chat.\nKB: {kb_name}",
             )
-            data = await tool.handler(model)
-        except Exception as e:
-            await self._transient_set(status, "⚠️ Ingest failed.")
-            await self._transient_clear(status)
-            await msg.reply_text(f"⚠️ PDF ingest failed: {e}")
-            self._dbg(f"PDF ingest error: {e!r}")
             return
 
-        self.dedup.record_pdf(
+        await self._status_edit(status_msg, "🧱 Copio e indicizzo nella knowledge base…")
+
+        try:
+            copied = copy_source_file(self.workspace, kb_name, local_path)
+            result = ingest_kb(self.workspace, kb_name)
+        except Exception as e:
+            await self._status_edit(status_msg, "⚠️ Ingest fallito")
+            await self._safe_reply(msg, f"Ingest PDF fallito: {e}")
+            return
+
+        self.dedup_map.put(
             chat_id,
-            dedup_key,
+            digest,
             {
-                "file_name": file_name,
-                "size": size,
-                "sha256": sha,
+                "filename": safe_name,
+                "local_path": str(local_path),
+                "copied_path": str(copied),
                 "kb_name": kb_name,
-                "source_pdf": data.get("source_pdf"),
-                "chunks": data.get("chunks"),
+                "chunk_files": result.chunk_files,
+                "indexed_points": result.indexed_points,
             },
         )
 
-        await self._transient_set(status, "✅ Ingest OK.")
-        await self._transient_clear(status)
-
-        await msg.reply_text(
-            f"✅ Ingest OK into KB '{kb_name}'.\n"
-            f"Document: {file_name}\n"
-            f"Chunks: {data.get('chunks')}"
+        await self._status_edit(status_msg, "✅ PDF indicizzato")
+        await self._safe_reply(
+            msg,
+            (
+                f"✅ PDF ingest completato.\n"
+                f"KB: {kb_name}\n"
+                f"File: {safe_name}\n"
+                f"Chunk: {result.chunk_files}\n"
+                f"Punti indicizzati: {result.indexed_points}"
+            ),
         )
 
-    def _resolve_whisper_main(self) -> Path:
-        p = Path(getattr(self.cfg.tools, "whisper_cpp_main_path", "") or "").expanduser()
-        if p and not p.is_absolute():
-            p = (Path.cwd() / p).resolve()
-        if p and p.exists():
-            return p
+    # ------------------------------------------------------------------
+    # Voice / audio pipeline
+    # ------------------------------------------------------------------
 
-        d = Path(getattr(self.cfg.tools, "whisper_cpp_dir", "") or "").expanduser()
-        if d and not d.is_absolute():
-            d = (Path.cwd() / d).resolve()
-        cand = d / "main"
-        if cand.exists():
-            return cand
+    async def _download_telegram_audio(self, msg, ctx: ContextTypes.DEFAULT_TYPE, target_path: Path) -> None:
+        """
+        Scarica voice note o audio file Telegram su disco.
+        """
+        if msg.voice:
+            tg_file = await ctx.bot.get_file(msg.voice.file_id)
+            await tg_file.download_to_drive(custom_path=str(target_path))
+            return
 
-        return (Path.cwd() / "whisper.cpp" / "main").resolve()
+        if msg.audio:
+            tg_file = await ctx.bot.get_file(msg.audio.file_id)
+            await tg_file.download_to_drive(custom_path=str(target_path))
+            return
+
+        raise RuntimeError("no downloadable audio payload found")
+
+    def _audio_duration_seconds(self, msg) -> int:
+        """
+        Durata audio/voice in secondi, se disponibile.
+        """
+        if getattr(msg, "voice", None) and getattr(msg.voice, "duration", None) is not None:
+            return int(msg.voice.duration or 0)
+        if getattr(msg, "audio", None) and getattr(msg.audio, "duration", None) is not None:
+            return int(msg.audio.duration or 0)
+        return 0
+
+    def _audio_suffix(self, msg) -> str:
+        """
+        Estensione di file coerente con il payload Telegram.
+        """
+        if getattr(msg, "voice", None):
+            return ".ogg"
+
+        if getattr(msg, "audio", None):
+            filename = str(getattr(msg.audio, "file_name", "") or "").strip()
+            suffix = Path(filename).suffix.lower()
+            if suffix:
+                return suffix
+
+        return ".bin"
+
+    def _audio_basename(self, msg, chat_id: str) -> str:
+        """
+        Nome base file per salvataggio locale.
+        """
+        if getattr(msg, "audio", None):
+            filename = str(getattr(msg.audio, "file_name", "") or "").strip()
+            if filename:
+                return sanitize_session_id(Path(filename).stem)
+
+        return f"{chat_id}_{getattr(msg, 'message_id', 'audio')}"
 
     async def _on_voice_or_audio(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        chat = update.effective_chat
+        """
+        Pipeline:
+        Telegram voice/audio -> STT tool -> orchestrator -> opzionale TTS tool
+        """
         msg = update.effective_message
-        if not chat or not msg:
+        chat = update.effective_chat
+        if not msg or not chat:
             return
+
         if not self._stt_enabled():
-            self._dbg("VOICE/AUDIO received but stt_auto disabled")
+            await self._safe_reply(
+                msg,
+                "🎙️ Ho ricevuto l’audio, ma STT non è attivo nella configurazione.",
+            )
             return
 
-        chat_id = str(chat.id)
+        duration_s = self._audio_duration_seconds(msg)
+        max_voice = self._max_voice_seconds()
 
-        voice = getattr(msg, "voice", None)
-        audio = getattr(msg, "audio", None)
-        media = voice or audio
-        if not media:
+        if duration_s > 0 and duration_s > max_voice:
+            await self._safe_reply(
+                msg,
+                f"🎙️ Audio troppo lungo: {duration_s}s. Limite configurato: {max_voice}s.",
+            )
             return
 
-        duration = int(getattr(media, "duration", 0) or 0)
-        max_s = self._max_voice_seconds()
-        self._dbg(f"VOICE/AUDIO chat_id={chat_id} file_id={getattr(media,'file_id',None)} duration={duration}s max={max_s}s")
+        session = self._ensure_chat_session_state(str(chat.id))
 
-        if duration and max_s and duration > max_s:
-            await msg.reply_text(f"⚠️ Voice/audio too long ({duration}s). Max allowed: {max_s}s.")
-            return
-
-        session_id = self.map.get_session_for_chat(chat_id)
-        session = self.sm.get(session_id)
-        session.set_state({"kb_name": self._kb_name_for_chat(chat_id)})
+        suffix = self._audio_suffix(msg)
+        base = self._audio_basename(msg, str(chat.id))
+        local_audio = self.audio_dir / f"{base}{suffix}"
 
         await self._typing(update, ctx)
-
-        status = await self._transient(msg, "🔎 Downloading audio…")
-
-        dest_dir = self.inbox_dir / chat_id / "voice"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-
-        ext = "ogg" if voice else (Path(getattr(audio, "file_name", "audio")).suffix.lstrip(".") or "bin")
-        in_path = dest_dir / f"{media.file_id}.{ext}"
-        wav_path = dest_dir / f"{media.file_id}.wav"
-        out_prefix = dest_dir / f"{media.file_id}_whisper"
+        status_msg = await self._status_message(msg, "🎙️ Ricevuto audio, lo scarico…")
 
         try:
-            tg_file = await ctx.bot.get_file(media.file_id)
-            await tg_file.download_to_drive(custom_path=str(in_path))
+            await self._download_telegram_audio(msg, ctx, local_audio)
         except Exception as e:
-            await self._transient_set(status, "⚠️ Download failed.")
-            await self._transient_clear(status)
-            await msg.reply_text(f"⚠️ Could not download voice/audio: {e}")
-            self._dbg(f"VOICE download error: {e!r}")
+            await self._status_edit(status_msg, "⚠️ Download audio fallito")
+            await self._safe_reply(msg, f"Download audio fallito: {e}")
             return
 
-        await self._transient_set(status, "🔎 Converting with ffmpeg…")
-
-        ffmpeg = str(getattr(self.cfg.tools, "ffmpeg_bin", "ffmpeg") or "ffmpeg")
-        cmd = [ffmpeg, "-y", "-i", str(in_path), "-ar", "16000", "-ac", "1", str(wav_path)]
+        await self._status_edit(status_msg, "📝 Trascrivo l’audio…")
 
         try:
-            rc, out, err = await _run_subprocess(
-                cmd,
-                timeout_s=max(60.0, float(max_s) * 1.0 if max_s else 120.0),
+            stt_result = await self._run_tool(
+                "stt",
+                {
+                    "audio_path": str(local_audio),
+                    "lang": "auto",
+                },
             )
-            if rc != 0:
-                await self._transient_set(status, "⚠️ ffmpeg failed.")
-                await self._transient_clear(status)
-                self._dbg(f"ffmpeg rc={rc} err={err.strip()[:1200]!r}")
-                await msg.reply_text("⚠️ Errore conversione audio. Controlla il terminale.")
-                return
         except Exception as e:
-            await self._transient_set(status, "⚠️ ffmpeg error.")
-            await self._transient_clear(status)
-            self._dbg(f"ffmpeg exception: {e!r}")
-            await msg.reply_text("⚠️ Errore conversione audio. Controlla il terminale.")
+            await self._status_edit(status_msg, "⚠️ Errore STT")
+            await self._safe_reply(msg, f"Errore STT: {e}")
             return
 
-        await self._transient_set(status, "💭 Transcribing with whisper.cpp…")
-
-        whisper_main = self._resolve_whisper_main()
-        model = Path(getattr(self.cfg.tools, "whisper_model", "") or "").expanduser()
-        if model and not model.is_absolute():
-            model = (Path.cwd() / model).resolve()
-
-        if not whisper_main.exists():
-            await self._transient_set(status, "⚠️ whisper.cpp not found.")
-            await self._transient_clear(status)
-            await msg.reply_text("⚠️ whisper.cpp main not found. Configure tools.whisper_cpp_main_path/whisper_cpp_dir.")
-            return
-        if not model.exists():
-            await self._transient_set(status, "⚠️ model not found.")
-            await self._transient_clear(status)
-            await msg.reply_text("⚠️ whisper model not found. Configure tools.whisper_model.")
+        if not stt_result.get("ok"):
+            err = str(stt_result.get("error") or "stt failed")
+            await self._status_edit(status_msg, "⚠️ Trascrizione fallita")
+            await self._safe_reply(msg, f"Trascrizione fallita: {err}")
             return
 
-        try:
-            lang = (getattr(self.cfg.tools, "whisper_language", "auto") or "auto").strip()
+        stt_data = stt_result.get("data") or {}
+        transcript = str(stt_data.get("text") or "").strip()
+        transcript_lang = str(stt_data.get("language") or "auto").strip() or "auto"
 
-            cmd = [str(whisper_main), "-m", str(model), "-f", str(wav_path)]
-            if lang and lang.lower() != "auto":
-                cmd += ["-l", lang]
-            cmd += ["-otxt", "-of", str(out_prefix)]
-
-            rc, out, err = await _run_subprocess(
-                cmd,
-                timeout_s=max(90.0, float(max_s) * 1.5 if max_s else 180.0),
-            )
-            if rc != 0:
-                await self._transient_set(status, "⚠️ whisper.cpp failed.")
-                await self._transient_clear(status)
-                await msg.reply_text("⚠️ Errore trascrizione. Controlla il terminale.")
-                self._dbg(f"whisper rc={rc} err={err.strip()[:400]!r}")
-                return
-
-            detected_lang = None
-            if lang and lang.lower() != "auto":
-                detected_lang = lang.lower()
-            else:
-                # whisper.cpp often prints something like 'detected language: en'
-                m = re.search(
-                    r"(?:detected\s+language|language)\s*[:=]\s*([a-z]{2,3})",
-                    (err or "") + "\n" + (out or ""),
-                    re.IGNORECASE,
-                )
-                if m:
-                    detected_lang = m.group(1).lower()
-        except Exception as e:
-            await self._transient_set(status, "⚠️ whisper.cpp error.")
-            await self._transient_clear(status)
-            await msg.reply_text(f"⚠️ whisper.cpp error: {e}")
-            self._dbg(f"whisper exception: {e!r}")
-            return
-
-        txt_path = Path(str(out_prefix) + ".txt")
-        transcript = ""
-        try:
-            if txt_path.exists():
-                transcript = txt_path.read_text(encoding="utf-8", errors="replace").strip()
-            if not transcript:
-                transcript = (out or "").strip()
-        except Exception:
-            transcript = (out or "").strip()
-        
-        if transcript and not detected_lang:
-            detected_lang = detect_language(transcript, default=getattr(self.cfg, "default_language", "it"))
-        
         if not transcript:
-            await self._transient_set(status, "⚠️ Empty transcript.")
-            await self._transient_clear(status)
-            await msg.reply_text("⚠️ Empty transcription.")
+            await self._status_edit(status_msg, "⚠️ Transcript vuoto")
+            await self._safe_reply(msg, "Non sono riuscito a estrarre testo dall’audio.")
             return
 
-        if self._echo_transcript():
-            await msg.reply_text("💬 Transcript:\n" + transcript[:3500] + ("…" if len(transcript) > 3500 else ""))
+        if self._echo_transcript_enabled():
+            await self._safe_reply(
+                msg,
+                f"📝 Transcript ({transcript_lang}):\n{transcript}",
+            )
 
-        await self._transient_set(status, "🧭 Thinking…")
+        await self._status_edit(status_msg, "🧭 Uso il transcript per preparare la risposta…")
 
-        status_msg = None
-        last_status = None
+        async def status_cb(text: str) -> None:
+            await self._status_edit(status_msg, text)
 
-        async def status_cb(s: str) -> None:
-            nonlocal status_msg, last_status
-            s = self._ui(s)
-            if last_status is not None and s != last_status:
-                await asyncio.sleep(1.0)
-            last_status = s
+        try:
+            turn = await self.orch.one_turn(
+                session=session,
+                user_text=transcript,
+                status=status_cb,
+            )
+        except Exception as e:
+            await self._status_edit(status_msg, "⚠️ Errore interno")
+            await self._safe_reply(msg, f"Errore interno: {e}")
+            return
+
+        await self._status_edit(status_msg, "✅ Fatto")
+        await self._safe_reply(msg, turn.content)
+
+        # Se il workflow ha già prodotto un audio (es. podcast), lo inviamo.
+        if turn.audio_path:
             try:
-                if status_msg is None:
-                    status_msg = await msg.reply_text(s)
-                else:
-                    await status_msg.edit_text(s)
+                path = Path(turn.audio_path)
+                if path.exists() and path.is_file():
+                    await self._record_voice(update, ctx)
+                    await self._safe_reply_audio(msg, path)
+                    return
             except Exception:
                 pass
 
-        try:
-            res = await self.orch.one_turn(session, transcript, status=status_cb, input_lang=detected_lang)
-            await msg.reply_text(res.content or "(empty)")
-            await self._transient_set(status, "✅ Done.")
-        except Exception as e:
-            self._dbg(f"VOICE/AUDIO orchestrator error: {e!r}")
-            await msg.reply_text(f"⚠️ Error: {e}")
-            await self._transient_set(status, "⚠️ Error.")
-        finally:
-            await self._transient_clear(status)
-            await asyncio.sleep(1.0)
-            if status_msg:
-                try:
-                    await status_msg.delete()
-                except Exception:
-                    pass
+        # TTS opzionale sulla risposta testuale del bot.
+        if self._tts_auto_reply_enabled() and turn.content.strip():
+            await self._status_edit(status_msg, "🔊 Sintetizzo la risposta…")
+            try:
+                tts_res = await self._run_tool(
+                    "tts",
+                    {
+                        "text": turn.content,
+                        "lang": transcript_lang if transcript_lang != "auto" else self.cfg.default_language,
+                        "output_dir": str(self.audio_dir),
+                        "output_stem": f"reply_{chat.id}_{getattr(msg, 'message_id', 'x')}",
+                    },
+                )
+            except Exception as e:
+                await self._safe_reply(msg, f"TTS fallito: {e}")
+                return
 
-    async def run(self) -> None:
+            if not tts_res.get("ok"):
+                err = str(tts_res.get("error") or "tts failed")
+                await self._safe_reply(msg, f"TTS fallito: {err}")
+                return
+
+            tts_data = tts_res.get("data") or {}
+            audio_path = str(tts_data.get("audio_path") or "").strip()
+            if audio_path:
+                audio_file = Path(audio_path)
+                if audio_file.exists() and audio_file.is_file():
+                    await self._record_voice(update, ctx)
+                    await self._safe_reply_audio(msg, audio_file, caption="🔊 Risposta audio")
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def run_polling(self) -> None:
+        """
+        Avvio polling Telegram.
+        """
         if self.app is None:
-            raise RuntimeError("TelegramChannel initialized with build_app=False")
-        self._dbg("Starting Telegram polling…")
+            raise RuntimeError("Telegram application not built")
+
+        await self._set_my_commands()
         await self.app.initialize()
         await self.app.start()
         await self.app.updater.start_polling()
-        self._dbg("Telegram polling started.")
         try:
-            await asyncio.Event().wait()
+            while True:
+                await asyncio.sleep(3600)
         finally:
-            self._dbg("Stopping Telegram polling…")
             await self.app.updater.stop()
             await self.app.stop()
             await self.app.shutdown()

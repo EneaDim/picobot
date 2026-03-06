@@ -1,40 +1,55 @@
 {
   "workspace": ".picobot/workspace",
+
   "language": {
     "default": "it"
   },
+
   "kb": {
     "default_name": "default",
     "auto_route_questions": false
   },
+
   "ollama": {
     "base_url": "http://localhost:11434",
     "model": "qwen2.5:3b-instruct-q4_0",
     "timeout_s": 600
   },
+
   "memory_limits": {
     "max_history_lines": 300,
     "tail_lines": 900
   },
+
   "summary": {
-    "max_chars": 24000
+    "mode": "single",
+    "max_chars": 24000,
+    "chunk_chars": 7000,
+    "max_chunks": 6,
+    "timeout_s": 600,
+    "output_language": "auto"
   },
+
   "retrieval": {
     "enabled": true,
+    "provider": "qdrant",
     "bm25_candidates": 9,
     "top_k": 3,
-    "max_context_chars": 5000,
-    "bm25_k1": 1.2,
-    "bm25_b": 0.75,
-    "provider": "qdrant",
     "vector_top_k": 8,
     "final_top_k": 4,
+    "max_context_chars": 5000,
+    "max_embed_chars": 4000,
+    "chunk_chars": 900,
+    "chunk_overlap": 120,
+    "bm25_k1": 1.2,
+    "bm25_b": 0.75,
     "exact_match_boost": 0.03,
     "special_token_boosts": {
       "--trace": 0.2,
       "trace-fst": 0.2
     }
   },
+
   "tools": {
     "base_dir": ".picobot/tools",
     "bins": {
@@ -76,6 +91,7 @@
       ]
     }
   },
+
   "sandbox": {
     "file": {
       "enabled": true,
@@ -103,23 +119,41 @@
         "wired.com",
         "arstechnica.com"
       ]
+    },
+    "exec": {
+      "enabled": true,
+      "timeout_s": 180,
+      "max_output_bytes": 200000,
+      "allowed_bins": [
+        "yt-dlp",
+        "ffmpeg",
+        "piper",
+        "whisper-cli",
+        "python",
+        "bash"
+      ]
     }
   },
+
   "ui": {
     "use_emojis": true,
     "use_prompt_toolkit": true,
     "vi_mode": false
   },
+
   "telegram": {
     "enabled": false,
     "bot_token": "YOUR_BOT_TOKEN",
     "kb_per_chat": true,
     "pdf_auto_ingest": true,
     "stt_auto": true,
-    "max_voice_seconds": 240,
+    "voice_stt_enabled": false,
     "send_transcript_flag": false,
+    "echo_transcript": false,
+    "max_voice_seconds": 240,
     "debug_terminal": true
   },
+
   "podcast": {
     "enabled": true,
     "tts_backend": "piper",
@@ -158,26 +192,38 @@
       }
     }
   },
+
   "debug": {
     "enabled": true
   },
+
   "web": {
     "enabled": true,
     "searxng_url": "http://localhost:8080",
     "timeout_s": 10.0,
     "max_results": 5
   },
+
   "qdrant": {
     "path": ".picobot/qdrant",
     "router_collection": "router_index",
     "docs_collection": "docs_index"
   },
+
   "vector": {
     "provider": "ollama",
     "base_url": "http://localhost:11434",
-    "embed_model": "qwen3-embedding:0.6b",
+    "embed_model": "nomic-embed-text",
     "timeout_s": 60
   },
+
+  "embeddings": {
+    "provider": "ollama",
+    "model": "nomic-embed-text",
+    "batch_size": 16,
+    "enabled": true
+  },
+
   "router": {
     "enabled": true,
     "top_k": 5,
