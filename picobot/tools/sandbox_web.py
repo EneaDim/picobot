@@ -14,10 +14,8 @@ class SandboxWebArgs(BaseModel):
     url: str = Field(..., min_length=8)
     timeout_s: float = Field(default=8.0, ge=1.0, le=30.0)
     max_bytes: int = Field(default=200_000, ge=10_000, le=2_000_000)
-    whitelist: list[str] = Field(default_factory=list, description="Allowed domains (exact match)")
-
-    # compat: some code used max_chars
-    max_chars: int | None = Field(default=None, description="Alias for max_bytes (compat)")
+    whitelist: list[str] = Field(default_factory=list)
+    max_chars: int | None = Field(default=None)
 
 
 def _cfg_defaults(cfg):
@@ -40,7 +38,6 @@ def make_sandbox_web_tool(cfg=None):
             if isinstance(args, dict):
                 args = SandboxWebArgs.model_validate(args)
 
-            # apply cfg defaults if caller didn't set
             timeout_s = float(getattr(args, "timeout_s", None) or defaults.get("timeout_s", 8.0))
             max_bytes = int((args.max_chars or 0) or args.max_bytes or defaults.get("max_bytes", 200_000))
             wl = args.whitelist or defaults.get("whitelist", [])
@@ -72,7 +69,17 @@ def make_sandbox_web_tool(cfg=None):
 
             text = (data.get("text") or "").strip()
             lang = detect_language(text, default="it") if text else None
-            return tool_ok({"url": args.url, "text": text, "length": len(text), "truncated": bool(data.get("truncated"))}, language=lang)
+            return tool_ok(
+                {
+                    "url": args.url,
+                    "title": (data.get("title") or "").strip(),
+                    "description": (data.get("description") or "").strip(),
+                    "text": text,
+                    "length": len(text),
+                    "truncated": bool(data.get("truncated")),
+                },
+                language=lang,
+            )
         except Exception as e:
             return tool_error(str(e))
 
@@ -85,24 +92,96 @@ def make_sandbox_web_tool(cfg=None):
 
 
 _PY_FETCH = r'''
-import sys, json, urllib.request, re
-WS = re.compile(r"\s+")
+import sys, json, urllib.request, re, html as html_lib
 
 args = json.loads(sys.stdin.read() or "{}")
 url = args.get("url") or ""
 timeout_s = float(args.get("timeout_s") or 8.0)
 max_bytes = int(args.get("max_bytes") or 200000)
 
-req = urllib.request.Request(url, headers={"User-Agent": "picobot-sandbox-web"})
+req = urllib.request.Request(
+    url,
+    headers={
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+    },
+)
+
+def _meta(rx, html):
+    m = re.search(rx, html, flags=re.I | re.S)
+    if not m:
+        return ""
+    return html_lib.unescape(m.group(1)).strip()
+
+def _clean_title(s):
+    s = html_lib.unescape(s or "")
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"\s*[|\-–—·»›]+\s*.*$", "", s).strip()
+    return s
+
+def _clean_text(html):
+    html = re.sub(r"<script.*?</script>", " ", html, flags=re.I | re.S)
+    html = re.sub(r"<style.*?</style>", " ", html, flags=re.I | re.S)
+    html = re.sub(r"<svg.*?</svg>", " ", html, flags=re.I | re.S)
+    html = re.sub(r"<noscript.*?</noscript>", " ", html, flags=re.I | re.S)
+    html = re.sub(r"<header.*?</header>", " ", html, flags=re.I | re.S)
+    html = re.sub(r"<footer.*?</footer>", " ", html, flags=re.I | re.S)
+    html = re.sub(r"<nav.*?</nav>", " ", html, flags=re.I | re.S)
+
+    html = re.sub(r"<[^>]+>", " ", html)
+    text = html_lib.unescape(html)
+    text = re.sub(r"\b(?:Skip to main content|Passa ai contenuti principali|Accedi direttamente.*?|Cookie.*?|Privacy.*?|Terms.*?|Newsletter.*?)\b", " ", text, flags=re.I)
+    text = re.sub(r'"@context"\s*:\s*"https://schema.org/.*?(?=[\.\!\?])', " ", text, flags=re.I | re.S)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    parts = re.split(r'(?<=[\.\!\?])\s+', text)
+    kept = []
+    for p in parts:
+        p = p.strip()
+        if len(p) < 40:
+            continue
+        low = p.lower()
+        if "schema.org" in low or "javascript" in low:
+            continue
+        if "<a href" in low or "{" in p or "}" in p:
+            continue
+        if "seleziona la tua lingua" in low or "cambia la lingua" in low:
+            continue
+        kept.append(p)
+        if len(" ".join(kept)) > 1800:
+            break
+    return " ".join(kept).strip()
+
 try:
     with urllib.request.urlopen(req, timeout=timeout_s) as r:
         raw = r.read(max_bytes + 1)
+
     truncated = len(raw) > max_bytes
     if truncated:
         raw = raw[:max_bytes]
-    text = raw.decode("utf-8", errors="replace")
-    text = WS.sub(" ", text).strip()
-    print(json.dumps({"ok": True, "text": text, "truncated": truncated}, ensure_ascii=False))
+
+    html = raw.decode("utf-8", errors="replace")
+
+    title = _meta(r"<meta[^>]+property=[\"']og:title[\"'][^>]+content=[\"'](.*?)[\"']", html)
+    if not title:
+        title = _meta(r"<title>(.*?)</title>", html)
+    title = _clean_title(title)
+
+    description = _meta(r"<meta[^>]+property=[\"']og:description[\"'][^>]+content=[\"'](.*?)[\"']", html)
+    if not description:
+        description = _meta(r"<meta[^>]+name=[\"']description[\"'][^>]+content=[\"'](.*?)[\"']", html)
+    description = re.sub(r"\s+", " ", description).strip()
+
+    text = _clean_text(html)
+
+    print(json.dumps({
+        "ok": True,
+        "title": title,
+        "description": description,
+        "text": text,
+        "truncated": truncated
+    }, ensure_ascii=False))
 except Exception as e:
     print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
 '''

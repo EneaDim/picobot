@@ -1,60 +1,42 @@
-from __future__ import annotations
-
 from pathlib import Path
-import pytest
 
-from picobot.session.manager import SessionManager
-from picobot.agent.orchestrator import Orchestrator
-from picobot.config.schema import Config
-from picobot.providers.types import ChatResponse
-from picobot.retrieval.store import KBStore
+from picobot.retrieval.ingest import ingest_kb
+from picobot.retrieval.query import query_kb
+from picobot.retrieval.store import ensure_kb_dirs
 
 
-class DummyProvider:
-    async def chat(self, messages, tools=None, max_tokens=0, temperature=0.0):
-        return ChatResponse(content="ANSWER_OK", tool_calls=[])
+def test_no_index_returns_no_hits(tmp_path: Path):
+    workspace = tmp_path
+    ensure_kb_dirs(workspace, "emptykb")
+
+    qr = query_kb(workspace, "emptykb", "how --trace works", top_k=4)
+
+    assert qr.hits == []
+    assert qr.context == ""
 
 
-@pytest.mark.asyncio
-async def test_no_index_never_quotes(tmp_path: Path):
-    ws = tmp_path
-    sm = SessionManager(ws)
-    s = sm.get("s1")
+def test_hits_return_context_for_relevant_query(tmp_path: Path, monkeypatch):
+    workspace = tmp_path
+    p = ensure_kb_dirs(workspace, "verilator")
 
-    cfg = Config(workspace=str(ws))
-    cfg.retrieval.enabled = True
+    pdf_path = p.source_dir / "verilator.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake pdf")
 
-    orch = Orchestrator(cfg, DummyProvider(), ws)
-    res = await orch.one_turn(s, "pdf formats", status=None)
-    assert res.action == "kb_query"
-    assert res.retrieval_hits == 0
-    assert "> \"" not in res.content
+    monkeypatch.setattr(
+        "picobot.retrieval.ingest._read_pdf_text",
+        lambda _pdf: """
+        Verilator documentation.
 
+        The --trace option enables waveform tracing.
+        Use --trace-fst to write FST waveforms.
+        Tracing is useful for debugging simulations.
+        """.strip(),
+    )
 
-@pytest.mark.asyncio
-async def test_hits_must_include_quote(tmp_path: Path):
-    ws = tmp_path
-    sm = SessionManager(ws)
-    s = sm.get("s1")
+    ingest_kb(workspace, "verilator")
 
-    # Create new KB layout: workspace/docs/default/kb
-    kb_dir = ws / "docs" / "default" / "kb"
-    chunks = kb_dir / "chunks"
-    chunks.mkdir(parents=True, exist_ok=True)
+    qr = query_kb(workspace, "verilator", "how --trace works in verilator", top_k=4)
 
-    chunk_id = "doc-0000-aaaa"
-    chunk_text = "This is a retrieved fact about formats."
-    (chunks / f"{chunk_id}.md").write_text(chunk_text, encoding="utf-8")
-
-    # Build index.json
-    KBStore(kb_dir).rebuild_index()
-
-    cfg = Config(workspace=str(ws))
-    cfg.retrieval.enabled = True
-    orch = Orchestrator(cfg, DummyProvider(), ws)
-
-    res = await orch.one_turn(s, "pdf formats", status=None)
-    assert res.action == "kb_query"
-    assert res.retrieval_hits > 0
-    assert "> \"" in res.content
-    assert "formats" in res.content.lower()
+    assert len(qr.hits) > 0
+    assert "--trace" in qr.context.lower()
+    assert "waveform" in qr.context.lower() or "tracing" in qr.context.lower()

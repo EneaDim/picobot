@@ -314,44 +314,80 @@ def news_summarizer_system(lang: str | None = None) -> str:
     )
 
 
-def news_summarizer_user_prompt(lang: str, query: str, items: list[dict], max_bullets: int = 7) -> str:
-    l = _norm_lang(lang)
-    q = (query or "").strip()
-    k = max(3, min(int(max_bullets or 7), 10))
 
-    # Build a compact pack: title + url + snippet + excerpt
+
+
+
+
+def news_summarizer_user_prompt(*, lang, query, items, max_bullets=7):
     blocks = []
-    for it in (items or [])[:10]:
+
+    for idx, it in enumerate((items or [])[:10], start=1):
+        if not isinstance(it, dict):
+            continue
         if not it.get("ok"):
             continue
+
         title = (it.get("title") or "").strip()
         url = (it.get("final_url") or it.get("url") or "").strip()
         snippet = (it.get("snippet") or "").strip()
+        description = (it.get("description") or "").strip()
         text = (it.get("text") or "").strip()
-        excerpt = text[:1200].strip()
-        blocks.append(f"- TITLE: {title}\n  URL: {url}\n  SNIPPET: {snippet}\n  EXCERPT: {excerpt}")
 
-    src = "\n\n".join(blocks).strip()
-
-    if l == "it":
-        return (
-            f"Query: {q}\n"
-            "Sintetizza le notizie dalle fonti.\n"
-            "Output:\n"
-            f"- {k} punti max\n"
-            "- 1 riga per punto\n"
-            "- includi URL tra parentesi quando rilevante\n"
-            "- se le fonti non bastano: 'non trovato'\n\n"
-            f"FONTI:\n{src}\n"
+        blocks.append(
+            f"""
+ITEM {idx}
+TITLE: {title}
+URL: {url}
+SNIPPET: {snippet}
+DESCRIPTION: {description}
+CONTENT:
+{text}
+"""
         )
 
-    return (
-        f"Query: {q}\n"
-        "Summarize the news from the sources.\n"
-        "Output:\n"
-        f"- max {k} bullets\n"
-        "- 1 line per bullet\n"
-        "- include URL in parentheses when relevant\n"
-        "- if sources are insufficient: 'not found'\n\n"
-        f"SOURCES:\n{src}\n"
-    )
+    joined = "".join(blocks)
+
+    return f"""
+Requested language: {lang}
+User query: {query}
+
+Create a news digest from these sources.
+Return ONLY valid JSON following the schema from the system prompt.
+
+Sources:
+{joined}
+"""
+
+
+def news_json_repair_system():
+    return """
+You repair malformed JSON.
+
+Return ONLY valid JSON.
+Do not use markdown.
+Do not explain anything.
+Follow exactly this schema:
+
+{
+  "items": [
+    {
+      "title": "string",
+      "bullets": ["string", "string", "string"],
+      "source_url": "string"
+    }
+  ]
+}
+"""
+
+
+
+def news_json_repair_user_prompt(raw_text: str):
+    return f"""
+Convert the following text into VALID JSON following the required schema.
+Keep the same meaning if possible.
+Return ONLY JSON.
+
+TEXT TO REPAIR:
+{raw_text}
+"""

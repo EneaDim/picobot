@@ -135,38 +135,32 @@ def chat(session: str = typer.Option("default", "--session", "-s")) -> None:
         if not user:
             continue
 
-        # --- deterministic rewrite for news (so CLI and Telegram behave the same) ---
+        
+        # --- deterministic rewrite for news (workflow-friendly) ---
 
-        # Convert /news <q> and news: <q> into explicit tool call.
-
-        # Uses json.dumps to safely quote strings.
-
-        import json
-
-        u = (user or '').strip()
+        u = (user or "").strip()
 
         low = u.lower()
 
-        if low.startswith('/news'):
+        if low.startswith("/news"):
 
-            q = u.split(None, 1)[1].strip() if ' ' in u else ''
+            q = u.split(None, 1)[1].strip() if " " in u else ""
 
             if not q:
 
-                user = '/help'
+                user = "/help"
 
             else:
 
-                user = 'tool news_digest ' + json.dumps({'query': q}, ensure_ascii=False)
+                user = f"news: {q}"
 
-        elif low.startswith('news:'):
+        elif low.startswith("news:"):
 
-            q = u.split(':', 1)[1].strip()
+            q = u.split(":", 1)[1].strip()
 
             if q:
 
-                user = 'tool news_digest ' + json.dumps({'query': q}, ensure_ascii=False)
-
+                user = f"news: {q}"
 
         cr = handle_command(user, session=current, session_manager=sm, cfg=cfg, workspace=ws)
 

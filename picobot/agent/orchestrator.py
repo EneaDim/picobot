@@ -100,8 +100,8 @@ class Orchestrator:
             make_sandbox_web_tool(self.cfg),
             make_sandbox_file_tool(),
             make_sandbox_python_tool(),
-            make_web_search_tool(self.cfg),
-            make_news_digest_tool(self.cfg),
+            make_web_search_tool(self.cfg, self.workspace),
+            make_news_digest_tool(self.cfg, self.workspace),
         ]:
             try:
                 self.tools.register(tool)
@@ -369,6 +369,36 @@ class Orchestrator:
 
         state_file = getattr(session, "state_file", self.workspace / "state" / "router.json")
         try:
+            st = session.get_state() or {}
+            if isinstance(st, dict):
+                state_file.parent.mkdir(parents=True, exist_ok=True)
+                state_file.write_text(json.dumps({
+                    "kb_name": str(st.get("kb_name") or ""),
+                    "kb_enabled": bool(st.get("kb_enabled", True)),
+                }), encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            st = session.get_state() or {}
+            if isinstance(st, dict):
+                state_file.parent.mkdir(parents=True, exist_ok=True)
+                state_file.write_text(json.dumps({
+                    "kb_name": str(st.get("kb_name") or ""),
+                    "kb_enabled": bool(st.get("kb_enabled", True)),
+                }), encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            st = session.get_state() or {}
+            if isinstance(st, dict):
+                state_file.parent.mkdir(parents=True, exist_ok=True)
+                state_file.write_text(json.dumps({
+                    "kb_name": str(st.get("kb_name") or ""),
+                    "kb_enabled": bool(st.get("kb_enabled", True)),
+                }), encoding="utf-8")
+        except Exception:
+            pass
+        try:
             r = json.loads(route_json_one_line(user_text, state_file, default_language=getattr(self.cfg, "default_language", "it")))
         except Exception:
             r = {"route": "workflow", "workflow": "chat", "lang": lang, "score": 0.0}
@@ -379,6 +409,41 @@ class Orchestrator:
         if (r.get("route") or "") == "tool":
             tool_name = (r.get("tool_name") or "").strip()
             args = r.get("args") if isinstance(r.get("args"), dict) else {}
+
+            # KB safety net:
+            # if a KB is active and router mistakenly picks a tool without meaningful args,
+            # prefer kb_query for normal natural-language questions.
+            kb_name = getattr(session, "kb_name", None)
+            try:
+                st = session.get_state() or {}
+                if isinstance(st, dict) and st.get("kb_name"):
+                    kb_name = st.get("kb_name")
+            except Exception:
+                pass
+
+            t_user = (user_text or "").strip()
+            low_user = t_user.lower()
+
+            looks_like_plain_question = (
+                t_user
+                and not low_user.startswith("/")
+                and not low_user.startswith("tool ")
+                and "youtube.com" not in low_user
+                and "youtu.be" not in low_user
+                and not low_user.startswith("news:")
+            )
+
+            meaningful_args = {k: v for k, v in (args or {}).items() if k not in {"lang"} and bool(v)}
+            bad_tool_without_args = (
+                tool_name in {"sandbox_python", "sandbox_file", "sandbox_web"}
+                and not meaningful_args
+            )
+
+            if kb_name and looks_like_plain_question and bad_tool_without_args:
+                kb = await self._kb_query(session, user_text, lang, status)
+                mm.append_turn("assistant", kb.content)
+                return kb
+
             return await self._run_tool(mm, lang, tool_name, args)
 
         wf = (r.get("workflow") or "chat").strip()

@@ -25,7 +25,15 @@
     "top_k": 3,
     "max_context_chars": 5000,
     "bm25_k1": 1.2,
-    "bm25_b": 0.75
+    "bm25_b": 0.75,
+    "provider": "qdrant",
+    "vector_top_k": 8,
+    "final_top_k": 4,
+    "exact_match_boost": 0.03,
+    "special_token_boosts": {
+      "--trace": 0.2,
+      "trace-fst": 0.2
+    }
   },
   "tools": {
     "base_dir": ".picobot/tools",
@@ -158,5 +166,35 @@
     "searxng_url": "http://localhost:8080",
     "timeout_s": 10.0,
     "max_results": 5
+  },
+  "qdrant": {
+    "path": ".picobot/qdrant",
+    "router_collection": "router_index",
+    "docs_collection": "docs_index"
+  },
+  "vector": {
+    "provider": "ollama",
+    "base_url": "http://localhost:11434",
+    "embed_model": "qwen3-embedding:0.6b",
+    "timeout_s": 60
+  },
+  "router": {
+    "enabled": true,
+    "top_k": 5,
+    "accept_threshold": 0.72,
+    "margin": 0.05,
+    "kb_probe_top_k": 2,
+    "kb_probe_threshold": 0.55,
+    "score_weights": {
+      "vector": 0.45,
+      "bm25": 0.25,
+      "rerank": 0.25,
+      "priority": 0.05
+    },
+    "reranker": {
+      "enabled": false,
+      "provider": "none",
+      "model": ""
+    }
   }
 }

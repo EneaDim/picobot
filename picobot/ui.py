@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from picobot.session.manager import SessionManager
+from picobot.retrieval.store import kb_paths, ensure_kb_dirs, list_kbs, count_source_files, count_store_files, copy_source_file, sanitize_kb_name
+from picobot.retrieval.ingest import ingest_kb
 
 # Optional CLI autocomplete
 _pt_prompt = None
@@ -327,8 +330,7 @@ def handle_command(
         q = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
         if not q:
             return CommandResult(handled=True, reply="Usage: /news <query>")
-        payload = {"query": q}
-        return CommandResult(handled=False, rewrite_text="tool news_digest " + json.dumps(payload, ensure_ascii=False))
+        return CommandResult(handled=False, rewrite_text=f"news: {q}")
 
     arg1 = parts[1] if len(parts) >= 2 else ""
     argrest = t[len(parts[0]) :].strip() if len(parts) >= 2 else ""
@@ -356,11 +358,8 @@ def handle_command(
         return CommandResult(handled=True, reply="Usage: /session list | /session set <id>")
 
     # kb
-
     if cmd == "/kb":
         sub = (arg1 or "").strip().lower()
-        if not sub:
-            return CommandResult(handled=True, reply="Usage: /kb list | /kb status | /kb set <name> | /kb unset | /kb on | /kb off | /kb ingest | /kb rebuild")
 
         def _kb_enabled() -> bool:
             try:
@@ -380,29 +379,24 @@ def handle_command(
                 pass
             return "default"
 
-        def _kb_root(name: str) -> Path:
-            return (workspace / "docs" / name).resolve()
-
-        def _kb_ensure(name: str) -> Path:
-            root = _kb_root(name)
-            (root / "kb").mkdir(parents=True, exist_ok=True)
-            (root / "source").mkdir(parents=True, exist_ok=True)
-            return root
+        if not sub:
+            return CommandResult(handled=True, reply="Usage: /kb list | /kb status | /kb set <name> | /kb unset | /kb on | /kb off | /kb ingest <pdf_path> | /kb rebuild")
 
         if sub == "list":
-            docs = (workspace / "docs")
-            docs.mkdir(parents=True, exist_ok=True)
-            items = sorted([p.name for p in docs.iterdir() if p.is_dir()])
+            items = list_kbs(workspace)
             return CommandResult(handled=True, reply="KBs: " + (", ".join(items) if items else "(none)"))
 
         if sub == "status":
             name = _kb_name()
-            root = _kb_ensure(name)
-            src = root / "source"
-            store = root / "kb"
-            src_n = len([p for p in src.rglob("*") if p.is_file()])
-            store_n = len([p for p in store.rglob("*") if p.is_file()])
-            return CommandResult(handled=True, reply=f"KB={name}\n(enabled={_kb_enabled()})\nsource_files={src_n}\nstore_files={store_n}\nroot={root}")
+            pths = ensure_kb_dirs(workspace, name)
+            return CommandResult(
+                handled=True,
+                reply=f"""KB={name}
+(enabled={_kb_enabled()})
+source_files={count_source_files(workspace, name)}
+store_files={count_store_files(workspace, name)}
+root={pths.root}""",
+            )
 
         if sub == "off":
             try:
@@ -413,7 +407,7 @@ def handle_command(
 
         if sub == "on":
             try:
-                session.set_state({"kb_enabled": True, "kb_auto": True})
+                session.set_state({"kb_enabled": True})
             except Exception:
                 pass
             return CommandResult(handled=True, reply="(kb enabled)")
@@ -421,7 +415,7 @@ def handle_command(
         if sub == "unset":
             try:
                 st = session.get_state() or {}
-                if isinstance(st, dict) and "kb_name" in st:
+                if isinstance(st, dict):
                     st.pop("kb_name", None)
                     session.set_state(st)
             except Exception:
@@ -431,40 +425,65 @@ def handle_command(
         if sub == "set":
             if len(parts) < 3:
                 return CommandResult(handled=True, reply="Usage: /kb set <name>")
-            name = parts[2].strip()
-            if not name:
-                return CommandResult(handled=True, reply="Usage: /kb set <name>")
-            _kb_ensure(name)
+            name = sanitize_kb_name(parts[2].strip())
+            ensure_kb_dirs(workspace, name)
             try:
-                session.set_state({"kb_name": name})
+                session.set_state({"kb_name": name, "kb_enabled": True})
             except Exception:
                 pass
             return CommandResult(handled=True, reply=f"(kb set to {name})")
 
-        if sub in ("ingest", "rebuild"):
-            name = _kb_name()
-            root = _kb_ensure(name)
-            source_dir = root / "source"
-            store_dir = root / "kb"
-            if sub == "rebuild":
-                try:
-                    for fp in store_dir.rglob("*"):
-                        if fp.is_file():
-                            fp.unlink(missing_ok=True)
-                except Exception:
-                    pass
+        if sub == "ingest":
+            if len(parts) < 3:
+                return CommandResult(handled=True, reply="Usage: /kb ingest <pdf_path>")
+            src_pdf = Path(parts[2].strip()).expanduser()
+            if not src_pdf.exists() or not src_pdf.is_file():
+                return CommandResult(handled=True, reply="Usage: /kb ingest <pdf_path>  (existing PDF file required)")
+            if src_pdf.suffix.lower() != ".pdf":
+                return CommandResult(handled=True, reply="Usage: /kb ingest <pdf_path>  (.pdf required)")
+
+            name = sanitize_kb_name(src_pdf.stem)
+            pths = ensure_kb_dirs(workspace, name)
+
             try:
-                from picobot.retrieval.ingest import ingest_dir
-                ingest_dir(source_dir=source_dir, store_dir=store_dir)
+                dst_pdf = copy_source_file(workspace, name, src_pdf)
+                res = ingest_kb(workspace, name)
             except Exception as e:
-                # detailed error should stay on terminal; CLI gets a short safe msg
-                return CommandResult(handled=True, reply=f"KB {sub} error. Check terminal. ({e.__class__.__name__})")
-            return CommandResult(handled=True, reply=f"(kb {sub} done) {name}")
+                return CommandResult(handled=True, reply=f"KB ingest error. Check terminal. ({e.__class__.__name__})")
 
-        return CommandResult(handled=True, reply="Usage: /kb list | /kb status | /kb set <name> | /kb unset | /kb on | /kb off | /kb ingest | /kb rebuild")
+            try:
+                session.set_state({"kb_name": name, "kb_enabled": True})
+            except Exception:
+                pass
 
+            return CommandResult(
+                handled=True,
+                reply=f"""(kb ingest done) {name}
+source={dst_pdf}
+chunks={pths.chunks_dir}
+index={pths.index_dir}
+manifest={pths.manifest_path}""",
+            )
+
+        if sub == "rebuild":
+            name = _kb_name()
+            try:
+                res = ingest_kb(workspace, name)
+            except Exception as e:
+                return CommandResult(handled=True, reply=f"KB rebuild error. Check terminal. ({e.__class__.__name__})")
+            pths = ensure_kb_dirs(workspace, name)
+            return CommandResult(
+                handled=True,
+                reply=f"""(kb rebuild done) {name}
+chunks={pths.chunks_dir}
+index={pths.index_dir}
+manifest={pths.manifest_path}""",
+            )
+
+        return CommandResult(handled=True, reply="Usage: /kb list | /kb status | /kb set <name> | /kb unset | /kb on | /kb off | /kb ingest <pdf_path> | /kb rebuild")
 
     if cmd == "/mem":
+
         global_memory = workspace / "memory" / "MEMORY.md"
         global_memory.parent.mkdir(parents=True, exist_ok=True)
         if not global_memory.exists():

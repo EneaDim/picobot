@@ -1,101 +1,55 @@
-from __future__ import annotations
-
 from pathlib import Path
-import pytest
 
-from picobot.tools.retrieval import make_kb_ingest_pdf_tool
-from picobot.retrieval.store import KBStore
-from picobot.config.schema import Config
-from picobot.session.manager import SessionManager
-from picobot.agent.orchestrator import Orchestrator
-
-def dbg(*a, **k):
-    # print(*a, **k)
-    pass
-
-class DummyProvider:
-    async def chat(self, messages, tools=None, max_tokens=0, temperature=0.0):
-        class R:
-            content = "OK"
-            tool_calls = []
-        return R()
+from picobot.retrieval.ingest import ingest_kb
+from picobot.retrieval.query import query_kb
+from picobot.retrieval.store import ensure_kb_dirs, kb_paths, read_manifest
 
 
-@pytest.mark.asyncio
-async def test_ingest_pdf_creates_source_chunks_and_index(tmp_path: Path, monkeypatch):
-    ws = tmp_path
-    docs_root = ws / "docs"
+def test_ingest_kb_creates_new_layout_and_query_works(tmp_path: Path, monkeypatch):
+    workspace = tmp_path
+    p = ensure_kb_dirs(workspace, "verilator")
 
-    pdf = ws / "sample.pdf"
-    pdf.write_bytes(b"not-a-real-pdf")
+    # fake source pdf
+    pdf_path = p.source_dir / "verilator.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake pdf content")
 
-    simple_text = (
-        "Questo è un documento di test.\n"
-        "Parla di formati di output.\n"
-        "Supporta VCD e FST.\n"
-        "Fine documento.\n"
+    # monkeypatch PDF extraction so the test does not depend on real PDF text extraction
+    monkeypatch.setattr(
+        "picobot.retrieval.ingest._read_pdf_text",
+        lambda _pdf: """
+        Verilator tracing documentation.
+
+        The --trace option enables waveform tracing.
+        You can use --trace-fst for FST tracing.
+        Tracing is useful for debugging generated simulations.
+        """.strip(),
     )
 
-    def fake_pdf_to_text(_path: Path) -> str:
-        return simple_text
+    res = ingest_kb(workspace, "verilator")
 
-    import picobot.tools.retrieval as tool_mod
-    import picobot.retrieval.ingest as ingest_mod
+    paths = kb_paths(workspace, "verilator")
+    manifest = read_manifest(workspace, "verilator")
 
-    monkeypatch.setattr(tool_mod, "pdf_to_text", fake_pdf_to_text)
-    monkeypatch.setattr(ingest_mod, "pdf_to_text", fake_pdf_to_text)
+    assert res.kb_name == "verilator"
+    assert res.source_files == 1
+    assert res.chunk_files > 0
 
-    tool = make_kb_ingest_pdf_tool(docs_root)
+    assert paths.source_dir.exists()
+    assert paths.store_dir.exists()
+    assert paths.chunks_dir.exists()
+    assert paths.index_dir.exists()
+    assert paths.manifest_path.exists()
 
-    args = {"kb_name": "demo", "pdf_path": str(pdf), "doc_name": "doc-test", "chunk_chars": 200, "overlap": 20}
-    model = tool.validate(args)
-    out = await tool.handler(model)
-    dbg('ingest out=', out)
+    chunk_files = sorted(paths.chunks_dir.glob("*.json"))
+    assert len(chunk_files) > 0
 
-    copied = ws / "docs" / "demo" / "source" / pdf.name
-    assert copied.exists()
+    assert (paths.index_dir / "postings.json").exists()
+    assert (paths.index_dir / "idf.json").exists()
 
-    chunks_dir = ws / "docs" / "demo" / "kb" / "chunks"
-    assert chunks_dir.exists()
-    assert any(chunks_dir.glob("*.md"))
+    assert manifest["kb_name"] == "verilator"
+    assert manifest["source_files"] == 1
+    assert manifest["chunk_files"] > 0
 
-    idx = ws / "docs" / "demo" / "kb" / "index.json"
-    assert idx.exists()
-
-    assert out["ok"] is True
-    assert out["data"]["kb_name"] == "demo"
-
-
-@pytest.mark.asyncio
-async def test_search_kb_query_appends_quote_when_hits(tmp_path: Path):
-    ws = tmp_path
-    cfg = Config(workspace=str(ws))
-    cfg.retrieval.enabled = True
-    cfg.retrieval.top_k = 3
-
-    sm = SessionManager(ws)
-    s = sm.get("s1")
-    s.set_state({"kb_name": "demo"})
-
-    kb_dir = ws / "docs" / "demo" / "kb"
-    chunks_dir = kb_dir / "chunks"
-    chunks_dir.mkdir(parents=True, exist_ok=True)
-
-    cid = "doc-0000"
-    text = (
-        "Questo è un documento di test.\n"
-        "Supporta i formati VCD e FST.\n"
-        "Usa l'opzione --trace per generare waveform.\n"
-        "Fine.\n"
-    )
-    (chunks_dir / f"{cid}.md").write_text(text, encoding="utf-8")
-
-    KBStore(kb_dir).rebuild_index()
-    dbg('kb_dir=', kb_dir)
-
-    orch = Orchestrator(cfg, DummyProvider(), ws)
-    res = await orch.one_turn(s, "Nel documento quali formati supporta? Riporta una breve citazione.", status=None)
-
-    assert res.action == "kb_query"
-    assert res.retrieval_hits > 0
-    assert "\n> \"" in res.content
+    qr = query_kb(workspace, "verilator", "how --trace works in verilator", top_k=4)
+    assert len(qr.hits) > 0
+    assert "--trace" in qr.context.lower()
