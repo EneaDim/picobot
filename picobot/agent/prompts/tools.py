@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 def tool_protocol_system(tool_names: list[str]) -> str:
     """
     Prompt sistema per forzare un protocollo JSON minimale di tool calling.

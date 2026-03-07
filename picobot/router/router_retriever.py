@@ -10,7 +10,6 @@ from __future__ import annotations
 # Deve solo produrre candidati ordinati bene.
 #
 # La policy finale sta in router_policy.py.
-
 import math
 import re
 from collections import Counter
@@ -20,7 +19,6 @@ from picobot.router.embedder import LocalEmbedder
 from picobot.router.qdrant_router_store import RouterQdrantStore
 from picobot.router.schemas import RouteCandidate, RouteRecord
 from picobot.runtime_config import cfg_get
-
 
 # Tokenizzazione leggera e locale.
 _WORD_RX = re.compile(r"[A-Za-z0-9_àèéìòù\-]{2,}", re.IGNORECASE)

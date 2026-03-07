@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 def detect_language(text: str, default: str = "it") -> str:
     """
     Rilevatore minimale it/en.

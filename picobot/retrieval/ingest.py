@@ -12,7 +12,6 @@ from __future__ import annotations
 # - tutta la logica di ingest è qui
 # - niente scorciatoie sparse altrove
 # - rebuild completo e coerente
-
 import hashlib
 from pathlib import Path
 

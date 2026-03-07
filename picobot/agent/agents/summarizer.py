@@ -9,16 +9,15 @@ from typing import Any, Literal
 
 from picobot.agent.agents.base import AgentResult
 from picobot.agent.prompts import (
-    youtube_summarizer_system,
-    youtube_summarizer_user_prompt,
-    news_summarizer_system,
-    news_summarizer_user_prompt,
     news_json_repair_system,
     news_json_repair_user_prompt,
+    news_summarizer_system,
+    news_summarizer_user_prompt,
     system_base_context,
+    youtube_summarizer_system,
+    youtube_summarizer_user_prompt,
 )
 from picobot.providers.ollama import OllamaProvider
-
 
 Kind = Literal["generic", "youtube", "news"]
 

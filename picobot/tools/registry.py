@@ -13,7 +13,6 @@ from __future__ import annotations
 #   - registry.tools
 #
 # Questa versione evita mismatch tra implementazioni vecchie e nuove.
-
 from picobot.tools.base import ToolSpec
 
 

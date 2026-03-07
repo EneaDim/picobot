@@ -11,7 +11,6 @@ from __future__ import annotations
 # - parse dei markdown
 # - validazione minima
 # - ordinamento stabile
-
 from pathlib import Path
 
 from picobot.router.documents import load_route_document, route_record_from_document

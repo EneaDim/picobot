@@ -7,9 +7,7 @@ from __future__ import annotations
 # - usiamo solo la config validata passata da loader.py
 #
 # Così cfg_get(...) è coerente con lo schema Pydantic.
-
 from typing import Any
-
 
 _RUNTIME_CONFIG: dict[str, Any] = {}
 

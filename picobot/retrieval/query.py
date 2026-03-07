@@ -8,7 +8,6 @@ from __future__ import annotations
 # Questo file espone:
 # - QueryService
 # - query_kb(...) per compatibilità con il resto del progetto
-
 from pathlib import Path
 
 from picobot.retrieval.bm25 import BM25Index

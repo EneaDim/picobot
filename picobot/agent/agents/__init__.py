@@ -1,4 +1,4 @@
-from .base import AgentResult, Agent
+from .base import Agent, AgentResult
 from .retriever import RetrieverAgent
 from .summarizer import SummarizerAgent
 

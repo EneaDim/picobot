@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +55,10 @@ def _help_text() -> str:
         "/podcast <topic>\n"
         "  genera un podcast\n"
         "\n"
+        "/play <wav_path>\n"
+        "/play last\n"
+        "  riproduce un file wav locale con aplay\n"
+        "\n"
         "/exit\n"
         "  esce dalla CLI\n"
     ).strip()
@@ -63,11 +68,13 @@ def _session_info(session: Session) -> str:
     state = session.get_state()
     kb_name = str(state.get("kb_name") or "").strip() or "(nessuna)"
     kb_enabled = bool(state.get("kb_enabled", True))
+    last_audio = str(state.get("last_audio_path") or "").strip() or "(nessuno)"
 
     return (
         f"Sessione corrente: {session.session_id}\n"
         f"KB attiva: {kb_name}\n"
-        f"KB enabled: {'yes' if kb_enabled else 'no'}"
+        f"KB enabled: {'yes' if kb_enabled else 'no'}\n"
+        f"Last audio: {last_audio}"
     )
 
 
@@ -110,6 +117,53 @@ def _clear_memory(session: Session) -> str:
     return "✅ Memoria e storia pulite."
 
 
+def _resolve_play_path(raw_value: str, session: Session) -> Path | None:
+    value = (raw_value or "").strip()
+
+    if value == "last":
+        last = str(session.get_state().get("last_audio_path") or "").strip()
+        if not last:
+            return None
+        return Path(last).expanduser().resolve()
+
+    if not value:
+        return None
+
+    return Path(value).expanduser().resolve()
+
+
+def _play_audio(cfg: Config, session: Session, raw_value: str) -> str:
+    path = _resolve_play_path(raw_value, session)
+    if path is None:
+        return "Uso: /play <wav_path> oppure /play last"
+
+    if not path.exists() or not path.is_file():
+        return f"File audio non trovato: {path}"
+
+    if path.suffix.lower() != ".wav":
+        return (
+            "Per ora /play usa aplay ed è pensato per file .wav.\n"
+            f"File ricevuto: {path.name}"
+        )
+
+    aplay_bin = str(getattr(getattr(cfg, "tools", None), "aplay_bin", "aplay") or "aplay").strip()
+
+    try:
+        subprocess.run(
+            [aplay_bin, str(path)],
+            check=True,
+        )
+    except FileNotFoundError:
+        return f"Comando aplay non trovato: {aplay_bin}"
+    except subprocess.CalledProcessError as e:
+        return f"Riproduzione fallita con exit code {e.returncode}: {path}"
+    except Exception as e:
+        return f"Errore durante la riproduzione audio: {e}"
+
+    session.set_state({"last_audio_path": str(path)})
+    return f"🔊 Riproduzione completata: {path}"
+
+
 def handle_command(
     raw: str,
     *,
@@ -125,7 +179,6 @@ def handle_command(
     parts = text.split()
     cmd = parts[0].lower()
 
-    # Slash commands che devono passare all'orchestrator/router
     passthrough_commands = {
         "/news",
         "/podcast",
@@ -286,6 +339,10 @@ def handle_command(
                 )
 
         return CommandResult(handled=True, reply="\n".join(lines))
+
+    if cmd == "/play":
+        arg = text[len("/play"):].strip()
+        return CommandResult(handled=True, reply=_play_audio(cfg, session, arg))
 
     return CommandResult(
         handled=True,

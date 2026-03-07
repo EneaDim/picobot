@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 def kb_user_prompt(*, lang: str, question: str, context: str) -> str:
     """
     Prompt utente per risposte grounded su KB.

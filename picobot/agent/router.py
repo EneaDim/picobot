@@ -8,7 +8,6 @@ from picobot.agent.prompts import detect_language
 from picobot.router.router_service import RouterService
 from picobot.router.schemas import RouteDecision, SessionRouteContext
 
-
 _router: RouterService | None = None
 
 

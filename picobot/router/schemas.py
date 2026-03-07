@@ -16,10 +16,8 @@ from __future__ import annotations
 #
 # Il record di base è RouteRecord, che nasce dai file markdown
 # presenti in picobot/routing_kb/routes/.
-
 from dataclasses import dataclass, field
 from typing import Any, Literal
-
 
 # Tipi di record ammessi dal router.
 RouteKind = Literal["tool", "workflow", "agent"]

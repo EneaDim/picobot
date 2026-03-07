@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from pydantic import BaseModel, Field
 
 from picobot.tools.base import ToolSpec, tool_error, tool_ok

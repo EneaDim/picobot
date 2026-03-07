@@ -17,7 +17,6 @@ from __future__ import annotations
 # 4. passa transcript all'orchestrator
 # 5. restituisce testo
 # 6. opzionalmente esegue tool "tts" sulla risposta e invia audio
-
 import asyncio
 import hashlib
 import json
@@ -50,7 +49,6 @@ from picobot.retrieval.ingest import ingest_kb
 from picobot.retrieval.store import copy_source_file, ensure_kb_dirs
 from picobot.session.manager import SessionManager, sanitize_session_id
 from picobot.ui import handle_command
-
 
 # -----------------------------------------------------------------------------
 # Persistence helpers

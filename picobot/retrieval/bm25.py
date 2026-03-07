@@ -18,7 +18,6 @@ from __future__ import annotations
 # - debug-friendly
 # - corretto
 # - sufficiente per una KB locale-first
-
 import json
 import math
 import re
@@ -26,7 +25,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from picobot.retrieval.schemas import DocumentChunk, LexicalHit
-
 
 _TOKEN_RX = re.compile(r"[A-Za-z0-9_àèéìòù\-]{2,}")
 

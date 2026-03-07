@@ -13,13 +13,11 @@ from __future__ import annotations
 # NON deve fare retrieval paralleli.
 # NON deve correggere il router con logiche opache.
 # NON deve diventare un secondo orchestrator.
-
 import json
 import re
 
 from picobot.router.schemas import RouteCandidate, RouteDecision, SessionRouteContext
 from picobot.runtime_config import cfg_get
-
 
 # Regex per tool esplicito:
 #   tool sandbox_python {"code":"print(2+2)"}

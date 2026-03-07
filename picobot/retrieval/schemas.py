@@ -12,7 +12,6 @@ from __future__ import annotations
 # - leggibili
 # - ottime per development locale
 # - evitano oggetti "magici" inutilmente complessi
-
 from dataclasses import dataclass, field
 from typing import Any
 

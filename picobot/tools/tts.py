@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from picobot.tools.base import ToolSpec, tool_error, tool_ok
+from picobot.tools.base import ToolSpec, tool_ok
 
 
 @dataclass(frozen=True)

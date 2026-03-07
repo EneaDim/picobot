@@ -12,7 +12,6 @@ from __future__ import annotations
 # - facciamo trim dei testi troppo lunghi
 # - restituiamo sempre list[list[float]]
 # - teniamo questo componente isolato così router e KB possono riusarlo
-
 import json
 import urllib.request
 from typing import Any

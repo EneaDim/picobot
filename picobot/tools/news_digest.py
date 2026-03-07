@@ -11,7 +11,6 @@ from __future__ import annotations
 # - rassegna rapida
 # - risposta leggibile
 # - fallimento chiaro se il servizio web locale non parte
-
 from pydantic import BaseModel, Field
 
 from picobot.services.searxng import SearxngManager, SearxngUnavailableError

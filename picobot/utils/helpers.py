@@ -9,14 +9,12 @@ from __future__ import annotations
 #
 # Non vogliamo una "misc.py" enorme.
 # Solo helper essenziali, chiari e utili.
-
 import json
 import re
 from pathlib import Path
 from typing import Any
 
 from picobot.config.schema import Config
-
 
 _SAFE_SEGMENT_RX = re.compile(r"[^a-zA-Z0-9._-]+")
 

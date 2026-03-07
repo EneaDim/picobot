@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 def system_base_context(lang: str) -> str:
     """
     Prompt base del modello per chat generale.

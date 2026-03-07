@@ -6,7 +6,6 @@ from __future__ import annotations
 # - copiare il template config in .picobot/config.json
 # - creare workspace coerente
 # - preparare le directory minime usate dal progetto
-
 import importlib.resources as ir
 import json
 from pathlib import Path

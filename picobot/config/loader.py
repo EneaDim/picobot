@@ -8,7 +8,6 @@ from __future__ import annotations
 # - supportare fallback tipo picobot.config.json
 # - applicare qualche normalizzazione legacy
 # - inizializzare runtime_config una volta sola
-
 import json
 import os
 from pathlib import Path

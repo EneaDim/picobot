@@ -201,7 +201,13 @@
     "enabled": true,
     "searxng_url": "http://localhost:8080",
     "timeout_s": 10.0,
-    "max_results": 5
+    "max_results": 5,
+    "managed_searxng": true,
+    "health_timeout_s": 2.5,
+    "startup_timeout_s": 45,
+    "docker_compose_dir": "searxng",
+    "docker_service_name": "searxng",
+    "auto_restart_on_failure": true
   },
 
   "qdrant": {

@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from picobot.agent.orchestrator import Orchestrator
+from picobot.config.init import init_project
 from picobot.config.loader import load_config
 from picobot.providers.ollama import OllamaProvider
 from picobot.session.manager import Session, SessionManager
+from picobot.tools.init_tools import bootstrap_all, resolve_config_path, tool_snapshot
 from picobot.ui import handle_command
 
 try:
@@ -165,7 +168,6 @@ def _render_banner(session: Session, workspace: Path) -> str:
 
 
 def _render_user_prompt() -> str:
-    # Niente ANSI qui: prompt_toolkit altrimenti può mostrarli grezzi.
     return "You: "
 
 
@@ -177,17 +179,33 @@ def _render_error(reply: str) -> str:
     return f"{_s('⚠️:', BOLD, FG_RED)} {reply.strip()}"
 
 
-async def _run_cli() -> int:
-    parser = argparse.ArgumentParser(description="Picobot CLI")
-    parser.add_argument("--session", default="default", help="Session ID iniziale")
-    args = parser.parse_args()
+def _run_init_command() -> int:
+    result = init_project(force=False)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
 
+
+def _run_init_tools_command(config_path: str | None, overwrite: bool) -> int:
+    cfg_path = resolve_config_path(config_path)
+    result = bootstrap_all(cfg_path, overwrite=overwrite)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _run_tools_status_command(config_path: str | None) -> int:
+    cfg_path = resolve_config_path(config_path)
+    result = tool_snapshot(cfg_path)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+async def _run_chat_cli(session_id: str) -> int:
     cfg = load_config()
     workspace = Path(cfg.workspace).expanduser().resolve()
     workspace.mkdir(parents=True, exist_ok=True)
 
     sm = SessionManager(workspace)
-    session = sm.get(args.session)
+    session = sm.get(session_id)
 
     provider = OllamaProvider(
         base_url=cfg.ollama.base_url,
@@ -298,12 +316,26 @@ async def _run_cli() -> int:
         print(_render_assistant(result.content))
         print()
 
-    return 0
-
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Picobot")
+    parser.add_argument("command", nargs="?", default="chat", choices=["chat", "init", "init-tools", "tools-status"])
+    parser.add_argument("--session", default="default", help="Session ID per la chat CLI")
+    parser.add_argument("--config", default=None, help="Path config per init-tools/tools-status")
+    parser.add_argument("--overwrite", action="store_true", help="Sovrascrivi tool già scaricati")
+    args = parser.parse_args()
+
+    if args.command == "init":
+        sys.exit(_run_init_command())
+
+    if args.command == "init-tools":
+        sys.exit(_run_init_tools_command(args.config, args.overwrite))
+
+    if args.command == "tools-status":
+        sys.exit(_run_tools_status_command(args.config))
+
     try:
-        code = asyncio.run(_run_cli())
+        code = asyncio.run(_run_chat_cli(args.session))
     except KeyboardInterrupt:
         code = 130
     sys.exit(code)

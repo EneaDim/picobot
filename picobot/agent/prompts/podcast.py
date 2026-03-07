@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 def podcast_script_system_prompt(lang: str) -> str:
     """
     Prompt sistema per copioni podcast.

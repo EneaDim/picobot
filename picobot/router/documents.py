@@ -24,7 +24,6 @@ from __future__ import annotations
 # - niente dipendenza PyYAML
 # - errori chiari e localizzati
 # - frontmatter sempre separato bene dal body
-
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path

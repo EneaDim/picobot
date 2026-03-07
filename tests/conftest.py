@@ -1,10 +1,17 @@
-from __future__ import annotations
+from pathlib import Path
 
-import os
+import pytest
 
-DEBUG = os.environ.get("PICOBOT_TEST_DEBUG", "").strip() in {"1", "true", "yes", "on"}
+from picobot.config.schema import Config
 
-def dbg(*args):
-    """Print debug info only if PICOBOT_TEST_DEBUG=1 (or if running pytest -s)."""
-    if DEBUG:
-        print(*args)
+
+@pytest.fixture
+def tmp_workspace(tmp_path: Path) -> Path:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
+@pytest.fixture
+def cfg(tmp_workspace: Path) -> Config:
+    return Config(workspace=str(tmp_workspace))

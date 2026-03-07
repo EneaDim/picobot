@@ -11,7 +11,6 @@ from __future__ import annotations
 # - pulire lo store locale
 # - leggere/scrivere manifest
 # - enumerare chunk JSON locali
-
 import json
 import re
 import shutil

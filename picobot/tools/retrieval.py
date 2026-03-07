@@ -6,7 +6,6 @@ from __future__ import annotations
 # ma rendiamo il contratto più pulito:
 # - kb_ingest_pdf resta CLI-managed
 # - kb_query usa il nuovo QueryService sotto al cofano
-
 from pathlib import Path
 
 from pydantic import BaseModel, Field

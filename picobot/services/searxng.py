@@ -10,13 +10,11 @@ from __future__ import annotations
 #
 # Questa classe NON deve esportare stacktrace Docker all'utente finale.
 # Deve fare best effort locale-first e poi fallire in modo chiaro.
-
 import shutil
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import httpx
 

@@ -11,7 +11,6 @@ from __future__ import annotations
 # Nota:
 # l'orchestrator nuovo usa quasi sempre chat senza tools.
 # Manteniamo però il ramo tools per compatibilità futura.
-
 import json
 from typing import Any
 

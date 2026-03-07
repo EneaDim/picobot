@@ -122,6 +122,13 @@ class Orchestrator:
         mm.append_turn("user", user_text)
         mm.append_turn("assistant", assistant_text)
 
+    def _store_audio_state(self, session: Session, audio_path: str | None) -> None:
+        """
+        Salva l'ultimo audio prodotto, se presente.
+        """
+        if audio_path and str(audio_path).strip():
+            session.set_state({"last_audio_path": str(audio_path).strip()})
+
     async def _run_tool(self, tool_name: str, args: dict[str, Any]) -> dict:
         resolved = self.tools.resolve_name(tool_name)
         tool = self.tools.get(resolved)
@@ -131,6 +138,7 @@ class Orchestrator:
     async def _run_explicit_tool(
         self,
         *,
+        session: Session,
         lang: str,
         tool_name: str,
         args: dict[str, Any],
@@ -172,13 +180,16 @@ class Orchestrator:
             )
 
         data = result.get("data") or {}
+        audio_path = str(data.get("audio_path") or "").strip() or None
+        self._store_audio_state(session, audio_path)
+
         pretty = json.dumps(data, ensure_ascii=False, indent=2)
 
         return TurnResult(
             content=pretty,
             action="tool",
             reason=f"tool:{tool_name}",
-            audio_path=str(data.get("audio_path") or "") or None,
+            audio_path=audio_path,
         )
 
     async def _chat(self, *, session: Session, user_text: str, lang: str, status: StatusCb | None) -> TurnResult:
@@ -384,7 +395,7 @@ class Orchestrator:
             reason="youtube_summarizer",
         )
 
-    async def _workflow_podcast(self, *, user_text: str, lang: str, status: StatusCb | None) -> TurnResult:
+    async def _workflow_podcast(self, *, session: Session, user_text: str, lang: str, status: StatusCb | None) -> TurnResult:
         topic = user_text.strip()
         if topic.lower().startswith("/podcast"):
             topic = topic[8:].strip()
@@ -412,6 +423,8 @@ class Orchestrator:
                 reason="podcast generation error",
             )
 
+        self._store_audio_state(session, result.audio_path)
+
         msg = (
             f"🎧 Podcast pronto.\nAudio: {result.audio_path}"
             if lang == "it"
@@ -437,7 +450,7 @@ class Orchestrator:
         if name == "youtube_summarizer":
             return await self._workflow_youtube(user_text=user_text, lang=lang, status=status)
         if name == "podcast":
-            return await self._workflow_podcast(user_text=user_text, lang=lang, status=status)
+            return await self._workflow_podcast(session=session, user_text=user_text, lang=lang, status=status)
         if name == "kb_ingest_pdf":
             return TurnResult(
                 content=("L’ingest PDF va avviato da comando esplicito (/kb ingest ... oppure caricando un PDF su Telegram)." if lang == "it" else "PDF ingest must be started via an explicit command (/kb ingest ...) or by uploading a PDF on Telegram."),
@@ -468,6 +481,7 @@ class Orchestrator:
 
         if decision.action == "tool":
             result = await self._run_explicit_tool(
+                session=session,
                 lang=lang,
                 tool_name=decision.name,
                 args=dict(decision.args or {}),
@@ -483,6 +497,9 @@ class Orchestrator:
 
         if result.content.strip():
             self._append_turn_memory(session, text, result.content)
+
+        if result.audio_path:
+            self._store_audio_state(session, result.audio_path)
 
         return TurnResult(
             content=result.content,

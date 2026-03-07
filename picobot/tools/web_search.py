@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 # Tool web_search basato su SearXNG gestito automaticamente.
-
 from pydantic import BaseModel, Field
 
 from picobot.services.searxng import SearxngManager, SearxngUnavailableError
