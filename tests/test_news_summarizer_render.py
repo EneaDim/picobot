@@ -19,8 +19,7 @@ async def test_news_digest_render_output(tmp_path: Path):
     workspace.mkdir(parents=True, exist_ok=True)
 
     cfg = Config(workspace=str(workspace))
-    sm = SessionManager(workspace)
-    session = sm.get("news-test")
+    SessionManager(workspace).get("news-test")
 
     orch = Orchestrator(cfg, DummyProvider(), workspace)
 
@@ -67,8 +66,7 @@ async def test_news_digest_empty_items(tmp_path: Path):
     workspace.mkdir(parents=True, exist_ok=True)
 
     cfg = Config(workspace=str(workspace))
-    sm = SessionManager(workspace)
-    session = sm.get("news-empty")
+    SessionManager(workspace).get("news-empty")
 
     orch = Orchestrator(cfg, DummyProvider(), workspace)
 
