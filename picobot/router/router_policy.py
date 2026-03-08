@@ -1,32 +1,16 @@
 from __future__ import annotations
 
-# Router policy minima e pulita.
-#
-# Questa è la parte "decisionale" finale.
-# Deve fare poche cose, chiaramente:
-#
-# 1. riconoscere comandi/tool espliciti
-# 2. applicare vincoli di capability (KB, rete)
-# 3. applicare threshold + margin
-# 4. fallback a chat se ambiguo o debole
-#
-# NON deve fare retrieval paralleli.
-# NON deve correggere il router con logiche opache.
-# NON deve diventare un secondo orchestrator.
 import json
 import re
 
 from picobot.router.schemas import RouteCandidate, RouteDecision, SessionRouteContext
 from picobot.runtime_config import cfg_get
 
-# Regex per tool esplicito:
-#   tool sandbox_python {"code":"print(2+2)"}
 _EXPLICIT_TOOL_RX = re.compile(
     r"^\s*tool\s+([a-zA-Z0-9_:-]+)\s+(\{.*\})\s*$",
     re.DOTALL,
 )
 
-# Slash commands principali da preservare.
 _NEWS_COMMAND_RX = re.compile(r"^\s*/news(?:\s+.*)?$", re.IGNORECASE)
 _PY_COMMAND_RX = re.compile(r"^\s*/py(?:thon)?\b", re.IGNORECASE)
 _FILE_COMMAND_RX = re.compile(r"^\s*/file\b", re.IGNORECASE)
@@ -34,14 +18,10 @@ _FETCH_COMMAND_RX = re.compile(r"^\s*/fetch\b", re.IGNORECASE)
 _KB_INGEST_COMMAND_RX = re.compile(r"^\s*/kb\s+ingest\b", re.IGNORECASE)
 _PODCAST_COMMAND_RX = re.compile(r"^\s*/podcast\b", re.IGNORECASE)
 
-# URL YouTube.
 _YT_RX = re.compile(r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/", re.IGNORECASE)
 
 
 def _extract_explicit_tool(text: str) -> tuple[str, dict] | None:
-    """
-    Estrae tool esplicito con args JSON, se presente.
-    """
     match = _EXPLICIT_TOOL_RX.match(text or "")
     if not match:
         return None
@@ -60,27 +40,30 @@ def _extract_explicit_tool(text: str) -> tuple[str, dict] | None:
     return tool_name, data
 
 
+def _candidate_score(candidate: RouteCandidate) -> float:
+    """
+    RouteCandidate nel router reale usa final_score.
+    Manteniamo fallback difensivo per evitare altri mismatch futuri.
+    """
+    for attr in ("final_score", "score", "combined_score"):
+        value = getattr(candidate, attr, None)
+        if value is not None:
+            try:
+                return float(value)
+            except Exception:
+                pass
+    return 0.0
+
+
 class RouterPolicy:
-    """
-    Policy finale del router.
-    """
-
     def __init__(self) -> None:
-        # Soglia minima sotto cui preferiamo chat.
         self.accept_threshold = float(cfg_get("router.accept_threshold", 0.52))
-
-        # Margine minimo tra top1 e top2 per evitare false decisioni.
         self.margin = float(cfg_get("router.margin", 0.08))
 
     def _explicit_decision(self, text: str) -> RouteDecision | None:
-        """
-        Gestisce i comandi espliciti e i casi che NON devono passare
-        dalla competizione semantica normale.
-        """
         raw = text or ""
         stripped = raw.strip()
 
-        # Tool esplicito "tool ... {...}".
         explicit_tool = _extract_explicit_tool(stripped)
         if explicit_tool is not None:
             tool_name, args = explicit_tool
@@ -93,7 +76,6 @@ class RouterPolicy:
                 candidates=[],
             )
 
-        # Slash command /news ...
         if _NEWS_COMMAND_RX.match(stripped):
             return RouteDecision(
                 action="workflow",
@@ -104,40 +86,36 @@ class RouterPolicy:
                 candidates=[],
             )
 
-        # Slash command /py ...
         if _PY_COMMAND_RX.match(stripped):
             return RouteDecision(
                 action="tool",
-                name="sandbox_python",
+                name="python",
                 reason="explicit /py command",
                 args={},
                 score=1.0,
                 candidates=[],
             )
 
-        # Slash command /file ...
         if _FILE_COMMAND_RX.match(stripped):
             return RouteDecision(
                 action="tool",
-                name="sandbox_file",
+                name="file",
                 reason="explicit /file command",
                 args={},
                 score=1.0,
                 candidates=[],
             )
 
-        # Slash command /fetch ...
         if _FETCH_COMMAND_RX.match(stripped):
             return RouteDecision(
                 action="tool",
-                name="sandbox_web",
+                name="web",
                 reason="explicit /fetch command",
                 args={},
                 score=1.0,
                 candidates=[],
             )
 
-        # Slash command /kb ingest ...
         if _KB_INGEST_COMMAND_RX.match(stripped):
             return RouteDecision(
                 action="workflow",
@@ -148,7 +126,6 @@ class RouterPolicy:
                 candidates=[],
             )
 
-        # Slash command /podcast ...
         if _PODCAST_COMMAND_RX.match(stripped):
             return RouteDecision(
                 action="workflow",
@@ -159,7 +136,6 @@ class RouterPolicy:
                 candidates=[],
             )
 
-        # URL YouTube => workflow diretto.
         if _YT_RX.search(stripped):
             return RouteDecision(
                 action="workflow",
@@ -177,14 +153,6 @@ class RouterPolicy:
         candidates: list[RouteCandidate],
         ctx: SessionRouteContext,
     ) -> list[RouteCandidate]:
-        """
-        Applica i vincoli hard di capability.
-
-        Regole:
-        - una route che richiede KB non è eligibile se KB non c'è o è disabilitata
-        - una route che richiede rete per ora resta eligibile;
-          la disabilitazione rete verrà gestita più avanti dal config/orchestrator
-        """
         out: list[RouteCandidate] = []
 
         for candidate in candidates:
@@ -204,70 +172,57 @@ class RouterPolicy:
         candidates: list[RouteCandidate],
         ctx: SessionRouteContext,
     ) -> RouteDecision:
-        """
-        Decisione finale del router.
-        """
-        # 1. prima i comandi espliciti
         explicit = self._explicit_decision(user_text)
         if explicit is not None:
             return explicit
 
-        # 2. poi i candidati filtrati per capability
         filtered = self._apply_constraints(candidates, ctx)
 
         if not filtered:
             return RouteDecision(
                 action="workflow",
                 name="chat",
-                reason="no eligible route candidates",
+                reason="no eligible candidates",
                 args={},
                 score=0.0,
                 candidates=[],
             )
 
-        top = filtered[0]
-        second = filtered[1] if len(filtered) > 1 else None
+        filtered = sorted(filtered, key=_candidate_score, reverse=True)
+        top1 = filtered[0]
+        top2 = filtered[1] if len(filtered) > 1 else None
 
-        # 3. ambiguità top1 vs top2
-        if second is not None:
-            gap = float(top.final_score) - float(second.final_score)
-            if gap < self.margin:
-                return RouteDecision(
-                    action="workflow",
-                    name="chat",
-                    reason="ambiguous top candidates",
-                    args={},
-                    score=float(top.final_score),
-                    candidates=filtered,
-                )
+        top1_score = _candidate_score(top1)
+        top2_score = _candidate_score(top2) if top2 is not None else None
 
-        # 4. confidenza insufficiente
-        if float(top.final_score) < self.accept_threshold:
+        if top1_score < self.accept_threshold:
             return RouteDecision(
                 action="workflow",
                 name="chat",
-                reason="low confidence",
+                reason=f"top score below threshold ({top1_score:.3f} < {self.accept_threshold:.3f})",
                 args={},
-                score=float(top.final_score),
+                score=top1_score,
                 candidates=filtered,
             )
 
-        # 5. dispatch coerente col tipo
-        if top.record.kind == "tool":
+        if top2 is not None and top2_score is not None and (top1_score - top2_score) < self.margin:
             return RouteDecision(
-                action="tool",
-                name=top.record.name,
-                reason=f"semantic route: {top.record.name}",
+                action="workflow",
+                name="chat",
+                reason=f"ambiguous top candidates (margin {(top1_score - top2_score):.3f} < {self.margin:.3f})",
                 args={},
-                score=float(top.final_score),
+                score=top1_score,
                 candidates=filtered,
             )
+
+        record = top1.record
+        action = "tool" if record.kind == "tool" else "workflow"
 
         return RouteDecision(
-            action="workflow",
-            name=top.record.name,
-            reason=f"semantic route: {top.record.name}",
+            action=action,
+            name=record.name,
+            reason=f"selected top candidate: {record.id}",
             args={},
-            score=float(top.final_score),
+            score=top1_score,
             candidates=filtered,
         )

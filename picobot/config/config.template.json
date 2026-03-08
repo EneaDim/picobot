@@ -65,19 +65,6 @@
       "piper_it": ".picobot/tools/piper/models/it_IT-paola-medium.onnx",
       "piper_en": ".picobot/tools/piper/models/en_US-lessac-medium.onnx"
     },
-    "sandbox_exec": {
-      "enabled": true,
-      "timeout_s": 180,
-      "max_output_bytes": 200000,
-      "allowed_bins": [
-        "yt-dlp",
-        "ffmpeg",
-        "piper",
-        "whisper-cli",
-        "python",
-        "bash"
-      ]
-    },
     "youtube": {
       "enabled": true,
       "timeout_s": 180,
@@ -93,16 +80,43 @@
   },
 
   "sandbox": {
-    "file": {
+    "runtime": {
+      "backend": "docker",
+      "workspace_root": ".picobot/workspace",
+      "runs_dir": ".picobot/workspace/sandbox_runs",
+      "docker": {
+        "enabled": true,
+        "image": "picobot-sandbox:latest",
+        "container_name": "picobot-sandbox",
+        "docker_bin": "docker",
+        "container_workspace_root": "/workspace",
+        "auto_create": true,
+        "extra_run_args": []
+      }
+    },
+    "exec": {
       "enabled": true,
-      "root": ".picobot/workspace",
-      "max_bytes": 200000
+      "timeout_s": 180,
+      "max_output_bytes": 200000,
+      "allowed_bins": [
+        "yt-dlp",
+        "ffmpeg",
+        "piper",
+        "whisper-cli",
+        "python",
+        "bash"
+      ]
     },
     "python": {
       "enabled": true,
       "timeout_s": 5,
       "cwd": ".picobot/workspace",
       "no_network": true
+    },
+    "file": {
+      "enabled": true,
+      "root": ".picobot/workspace",
+      "max_bytes": 200000
     },
     "web": {
       "enabled": true,
@@ -119,20 +133,21 @@
         "wired.com",
         "arstechnica.com"
       ]
-    },
-    "exec": {
-      "enabled": true,
-      "timeout_s": 180,
-      "max_output_bytes": 200000,
-      "allowed_bins": [
-        "yt-dlp",
-        "ffmpeg",
-        "piper",
-        "whisper-cli",
-        "python",
-        "bash"
-      ]
     }
+  },
+
+  "web_search": {
+    "enabled": true,
+    "backend": "searxng",
+    "searxng_url": "http://localhost:8080",
+    "timeout_s": 10.0,
+    "max_results": 5,
+    "managed_backend": true,
+    "health_timeout_s": 2.5,
+    "startup_timeout_s": 45,
+    "docker_compose_dir": "searxng",
+    "docker_service_name": "searxng",
+    "auto_restart_on_failure": true
   },
 
   "ui": {
@@ -195,19 +210,6 @@
 
   "debug": {
     "enabled": true
-  },
-
-  "web": {
-    "enabled": true,
-    "searxng_url": "http://localhost:8080",
-    "timeout_s": 10.0,
-    "max_results": 5,
-    "managed_searxng": true,
-    "health_timeout_s": 2.5,
-    "startup_timeout_s": 45,
-    "docker_compose_dir": "searxng",
-    "docker_service_name": "searxng",
-    "auto_restart_on_failure": true
   },
 
   "qdrant": {

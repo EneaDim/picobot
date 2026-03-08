@@ -129,11 +129,18 @@ class RouterConfig(BaseCfgModel):
     reranker: RouterRerankerConfig = Field(default_factory=RouterRerankerConfig)
 
 
-class WebConfig(BaseCfgModel):
+class WebSearchConfig(BaseCfgModel):
     enabled: bool = True
+    backend: str = "searxng"
     searxng_url: str = "http://localhost:8080"
     timeout_s: float = 10.0
     max_results: int = 5
+    managed_backend: bool = True
+    health_timeout_s: float = 2.5
+    startup_timeout_s: float = 45.0
+    docker_compose_dir: str = "searxng"
+    docker_service_name: str = "searxng"
+    auto_restart_on_failure: bool = True
 
 
 class ToolsBinsConfig(BaseCfgModel):
@@ -351,7 +358,7 @@ class Config(BaseCfgModel):
 
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     router: RouterConfig = Field(default_factory=RouterConfig)
-    web: WebConfig = Field(default_factory=WebConfig)
+    web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
@@ -426,7 +433,7 @@ Embeddings = EmbeddingsConfig
 Qdrant = QdrantConfig
 Retrieval = RetrievalConfig
 Router = RouterConfig
-Web = WebConfig
+WebSearch = WebSearchConfig
 Tools = ToolsConfig
 Sandbox = SandboxConfig
 Telegram = TelegramConfig

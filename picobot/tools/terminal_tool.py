@@ -1,46 +1,135 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Iterable
 
+from picobot.runtime_config import cfg_get
+from picobot.sandbox.docker_runner import DockerRunner
 from picobot.sandbox.runner import SandboxRunner
 from picobot.tools.sandbox_exec import ExecResult
 
 
+def _get_obj_path(obj: Any, path: str, default: Any = None) -> Any:
+    current = obj
+    for part in str(path).split("."):
+        if current is None:
+            return default
+        if hasattr(current, part):
+            current = getattr(current, part)
+        else:
+            return default
+    return current
+
+
 class TerminalToolBase:
+    """
+    Base unificata per tool terminali.
+
+    Backend deciso dalla config:
+      sandbox.runtime.backend = "local" | "docker"
+    """
+
     def __init__(
         self,
         *,
         allowed_bins: Iterable[str],
-        sandbox_root: str | Path | None = None,
+        cfg: Any | None = None,
         timeout_s: int = 180,
         max_output_bytes: int = 200_000,
         extra_env: dict[str, str] | None = None,
-        cwd: str | Path | None = None,
     ) -> None:
-        _ = cwd
-        root = sandbox_root or os.environ.get("PICOBOT_SANDBOX_ROOT", ".picobot/sandbox_runs")
-        self._runner = SandboxRunner(
-            allowed_bins=list(allowed_bins),
-            sandbox_root=root,
-            timeout_s=int(timeout_s),
-            max_output_bytes=int(max_output_bytes),
-            extra_env=extra_env,
+        self.cfg = cfg
+        self.allowed_bins = [str(x) for x in allowed_bins if str(x).strip()]
+        self.timeout_s = int(timeout_s)
+        self.max_output_bytes = int(max_output_bytes)
+        self.extra_env = dict(extra_env or {})
+
+        self.workspace_root = self._workspace_root()
+        self.runs_root = self._runs_root()
+        self.backend = self._backend_name()
+
+        self.workspace_root.mkdir(parents=True, exist_ok=True)
+        self.runs_root.mkdir(parents=True, exist_ok=True)
+
+        self._runner = self._build_runner()
+
+    def _cfg(self, path: str, default: Any = None) -> Any:
+        if self.cfg is not None:
+            value = _get_obj_path(self.cfg, path, default)
+            if value is not default:
+                return value
+        return cfg_get(path, default)
+
+    def _workspace_root(self) -> Path:
+        explicit = str(self._cfg("sandbox.runtime.workspace_root", "") or "").strip()
+        if explicit:
+            return Path(explicit).expanduser().resolve()
+
+        root = str(self._cfg("workspace", ".picobot/workspace") or ".picobot/workspace").strip()
+        return Path(root).expanduser().resolve()
+
+    def _runs_root(self) -> Path:
+        explicit = str(self._cfg("sandbox.runtime.runs_dir", "") or "").strip()
+        if explicit:
+            return Path(explicit).expanduser().resolve()
+        return (self.workspace_root / "sandbox_runs").resolve()
+
+    def _backend_name(self) -> str:
+        raw = str(self._cfg("sandbox.runtime.backend", "local") or "local").strip().lower()
+        return "docker" if raw == "docker" else "local"
+
+    def _build_runner(self):
+        if self.backend == "docker":
+            image = str(self._cfg("sandbox.runtime.docker.image", "picobot-sandbox:latest") or "picobot-sandbox:latest").strip()
+            container_name = str(self._cfg("sandbox.runtime.docker.container_name", "picobot-sandbox") or "picobot-sandbox").strip()
+            container_workspace_root = str(self._cfg("sandbox.runtime.docker.container_workspace_root", "/workspace") or "/workspace").strip()
+            docker_bin = str(self._cfg("sandbox.runtime.docker.docker_bin", "docker") or "docker").strip()
+            auto_create = bool(self._cfg("sandbox.runtime.docker.auto_create", True))
+            extra_run_args = list(self._cfg("sandbox.runtime.docker.extra_run_args", []) or [])
+
+            return DockerRunner(
+                allowed_bins=self.allowed_bins,
+                workspace_root=self.workspace_root,
+                image=image,
+                container_name=container_name,
+                container_workspace_root=container_workspace_root,
+                docker_bin=docker_bin,
+                timeout_s=self.timeout_s,
+                max_output_bytes=self.max_output_bytes,
+                extra_env=self.extra_env,
+                auto_create=auto_create,
+                extra_run_args=extra_run_args,
+            )
+
+        return SandboxRunner(
+            allowed_bins=self.allowed_bins,
+            workspace_root=self.workspace_root,
+            runs_root=self.runs_root,
+            timeout_s=self.timeout_s,
+            max_output_bytes=self.max_output_bytes,
+            extra_env=self.extra_env,
         )
-        self._debug = str(os.environ.get("PICOBOT_TOOL_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
 
     @property
-    def runner(self) -> SandboxRunner:
+    def runner(self):
         return self._runner
 
-    def _log_cmd(self, prefix: str, argv: list[str]) -> None:
-        if not self._debug:
-            return
+    def map_host_path(self, path: str | Path) -> str:
+        return self.runner.map_host_path(path)
 
-    def _log_result(self, prefix: str, res: ExecResult) -> None:
-        if not self._debug:
-            return
+    def resolve_workspace_path(self, value: str | Path) -> Path:
+        raw = str(value or "").strip()
+        if not raw:
+            return self.workspace_root
+
+        p = Path(raw).expanduser()
+        target = p.resolve() if p.is_absolute() else (self.workspace_root / p).resolve()
+
+        import os
+        if os.path.commonpath([str(self.workspace_root), str(target)]) != str(self.workspace_root):
+            raise ValueError(f"path outside workspace root: {target}")
+
+        return target
 
     def run_cmd(
         self,
@@ -50,8 +139,16 @@ class TerminalToolBase:
         timeout_s: int | None = None,
         input_bytes: bytes | None = None,
         env: dict[str, str] | None = None,
+        relative_cwd: str | Path | None = None,
     ) -> ExecResult:
-        run = self.runner.run(argv, timeout_s=timeout_s, env=env, input_bytes=input_bytes)
+        _ = prefix
+        run = self.runner.run(
+            argv,
+            timeout_s=timeout_s,
+            env=env,
+            input_bytes=input_bytes,
+            relative_cwd=relative_cwd,
+        )
         return run.to_exec_result()
 
     @staticmethod

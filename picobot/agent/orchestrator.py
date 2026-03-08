@@ -10,18 +10,19 @@ from picobot.agent.memory import make_memory_manager
 from picobot.agent.prompts import detect_language, kb_user_prompt, system_base_context
 from picobot.agent.router import deterministic_route
 from picobot.config.schema import Config
+from picobot.context import ContextBuilder
 from picobot.providers.ollama import OllamaProvider, OllamaProviderError, OllamaTimeout
 from picobot.session.manager import Session
 from picobot.tools.base import ToolError
+from picobot.tools.file import make_file_tool
 from picobot.tools.news_digest import NewsDigestArgs, make_news_digest_tool
 from picobot.tools.podcast import detect_podcast_request, generate_podcast
+from picobot.tools.python import make_python_tool
 from picobot.tools.registry import ToolRegistry
 from picobot.tools.retrieval import make_kb_ingest_pdf_tool, make_kb_query_tool
-from picobot.tools.sandbox_file import make_sandbox_file_tool
-from picobot.tools.sandbox_python import make_sandbox_python_tool
-from picobot.tools.sandbox_web import make_sandbox_web_tool
 from picobot.tools.stt import make_stt_tool
 from picobot.tools.tts import make_tts_tool
+from picobot.tools.web import make_web_tool
 from picobot.tools.web_search import make_web_search_tool
 from picobot.tools.youtube import YTSummaryArgs, make_yt_summary_tool, make_yt_transcript_tool
 
@@ -55,6 +56,7 @@ class Orchestrator:
         self.docs_root = self.workspace / "docs"
         self.docs_root.mkdir(parents=True, exist_ok=True)
         self.tools = ToolRegistry()
+        self.context_builder = ContextBuilder(cfg, self.workspace)
         self._register_tools()
 
     def _register_tools(self) -> None:
@@ -86,9 +88,9 @@ class Orchestrator:
         tool_specs = [
             make_kb_ingest_pdf_tool(self.docs_root),
             make_kb_query_tool(self.docs_root),
-            make_sandbox_python_tool(),
-            make_sandbox_file_tool(),
-            make_sandbox_web_tool(self.cfg),
+            make_python_tool(self.cfg),
+            make_file_tool(self.cfg),
+            make_web_tool(self.cfg),
             make_web_search_tool(self.cfg, self.workspace),
             make_news_digest_tool(self.cfg, self.workspace),
             make_yt_transcript_tool(ytdlp_bin, ytdlp_args=ytdlp_args),
@@ -100,21 +102,22 @@ class Orchestrator:
         for spec in tool_specs:
             self.tools.register(spec)
 
-    def _memory_context(self, session: Session) -> str:
-        mm = make_memory_manager(self.cfg, session, self.workspace)
-        mem = mm.read_memory().strip()
-        summ = mm.read_summary().strip()
-        hist = mm.read_history_tail(self.cfg.memory_limits.tail_lines).strip()
-
-        parts: list[str] = []
-        if mem and mem != "# Memory":
-            parts.append("SESSION MEMORY:\n" + mem)
-        if summ and summ != "# Session Summary":
-            parts.append("SESSION SUMMARY:\n" + summ)
-        if hist and hist != "# Session History":
-            parts.append("RECENT HISTORY:\n" + hist)
-
-        return "\n\n".join(parts).strip()
+    def _memory_context(
+        self,
+        session: Session,
+        *,
+        lang: str,
+        retrieval_context: str = "",
+        runtime_context: list[str] | None = None,
+        history_turns: int = 8,
+    ) -> str:
+        return self.context_builder.render_legacy_memory_block(
+            session=session,
+            lang=lang,
+            retrieval_context=retrieval_context,
+            runtime_context=runtime_context,
+            history_turns=history_turns,
+        )
 
     def _append_turn_memory(self, session: Session, user_text: str, assistant_text: str) -> None:
         mm = make_memory_manager(self.cfg, session, self.workspace)
@@ -123,9 +126,6 @@ class Orchestrator:
         mm.append_turn("assistant", assistant_text)
 
     def _store_audio_state(self, session: Session, audio_path: str | None) -> None:
-        """
-        Salva l'ultimo audio prodotto, se presente.
-        """
         if audio_path and str(audio_path).strip():
             session.set_state({"last_audio_path": str(audio_path).strip()})
 
@@ -196,13 +196,13 @@ class Orchestrator:
         if status:
             await status("💭 Sto pensando…")
 
-        sys_prompt = system_base_context(lang)
-        mem_ctx = self._memory_context(session)
-
-        messages = [
-            {"role": "system", "content": sys_prompt + ("\n\n" + mem_ctx if mem_ctx else "")},
-            {"role": "user", "content": user_text},
-        ]
+        messages = self.context_builder.build_messages(
+            session=session,
+            lang=lang,
+            user_text=user_text,
+            runtime_context=["workflow=chat"],
+            history_turns=8,
+        )
 
         try:
             resp = await self.provider.chat(
@@ -269,15 +269,18 @@ class Orchestrator:
         if status:
             await status("🧠 Sto preparando una risposta grounded…")
 
-        mem_ctx = self._memory_context(session)
-        sys_prompt = system_base_context(lang)
+        messages = self.context_builder.build_messages(
+            session=session,
+            lang=lang,
+            user_text=kb_user_prompt(lang=lang, question=user_text, context=context),
+            retrieval_context=context,
+            runtime_context=[f"workflow=kb_query", f"retrieval_hits={hits}", f"kb_name={kb_name}"],
+            history_turns=6,
+        )
 
         try:
             resp = await self.provider.chat(
-                messages=[
-                    {"role": "system", "content": sys_prompt + ("\n\n" + mem_ctx if mem_ctx else "")},
-                    {"role": "user", "content": kb_user_prompt(lang=lang, question=user_text, context=context)},
-                ],
+                messages=messages,
                 tools=None,
                 max_tokens=900,
                 temperature=0.0,

@@ -1,13 +1,5 @@
 from __future__ import annotations
 
-# Loader config robusto e coerente.
-#
-# Obiettivi:
-# - supportare PICOBOT_CONFIG
-# - supportare .picobot/config.json come default naturale
-# - supportare fallback tipo picobot.config.json
-# - applicare qualche normalizzazione legacy
-# - inizializzare runtime_config una volta sola
 import json
 import os
 from pathlib import Path
@@ -18,17 +10,6 @@ from picobot.runtime_config import set_runtime_config
 
 
 def _candidate_paths(explicit_path: str | Path | None = None) -> list[Path]:
-    """
-    Ordine di ricerca della config.
-
-    Priorità:
-    1. path esplicito
-    2. env PICOBOT_CONFIG
-    3. ./.picobot/config.json
-    4. ./picobot.config.json
-    5. ./config.json
-    6. ~/.picobot/config.json
-    """
     out: list[Path] = []
 
     if explicit_path is not None:
@@ -45,7 +26,6 @@ def _candidate_paths(explicit_path: str | Path | None = None) -> list[Path]:
         Path.home() / ".picobot" / "config.json",
     ])
 
-    # Dedup mantenendo l'ordine
     seen: set[str] = set()
     unique: list[Path] = []
 
@@ -59,9 +39,6 @@ def _candidate_paths(explicit_path: str | Path | None = None) -> list[Path]:
 
 
 def _load_json(path: Path) -> dict[str, Any]:
-    """
-    Carica un file JSON e garantisce che sia un oggetto.
-    """
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"Config file is not a JSON object: {path}")
@@ -69,9 +46,6 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _normalize_legacy(raw: dict[str, Any]) -> dict[str, Any]:
-    """
-    Normalizza alcune forme legacy senza introdurre magia eccessiva.
-    """
     data = dict(raw)
 
     # web.allowlist -> sandbox.web.whitelist_domains
@@ -88,21 +62,36 @@ def _normalize_legacy(raw: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
 
-    # language.default -> default_language
+    # legacy top-level web -> web_search
+    if "web_search" not in data:
+        legacy_web = data.get("web")
+        if isinstance(legacy_web, dict):
+            data["web_search"] = {
+                "enabled": legacy_web.get("enabled", True),
+                "backend": "searxng",
+                "searxng_url": legacy_web.get("searxng_url", "http://localhost:8080"),
+                "timeout_s": legacy_web.get("timeout_s", 10.0),
+                "max_results": legacy_web.get("max_results", 5),
+                "managed_backend": legacy_web.get("managed_searxng", True),
+                "health_timeout_s": legacy_web.get("health_timeout_s", 2.5),
+                "startup_timeout_s": legacy_web.get("startup_timeout_s", 45),
+                "docker_compose_dir": legacy_web.get("docker_compose_dir", "searxng"),
+                "docker_service_name": legacy_web.get("docker_service_name", "searxng"),
+                "auto_restart_on_failure": legacy_web.get("auto_restart_on_failure", True),
+            }
+
     language = data.get("language") or {}
     if isinstance(language, dict):
         default_lang = str(language.get("default") or "").strip()
         if default_lang and not data.get("default_language"):
             data["default_language"] = default_lang
 
-    # kb.default_name -> default_kb_name
     kb = data.get("kb") or {}
     if isinstance(kb, dict):
         default_kb = str(kb.get("default_name") or "").strip()
         if default_kb and not data.get("default_kb_name"):
             data["default_kb_name"] = default_kb
 
-    # vector.embed_model -> embeddings.model
     vector = data.get("vector") or {}
     if isinstance(vector, dict):
         embeddings = dict(data.get("embeddings") or {})
@@ -117,9 +106,6 @@ def _normalize_legacy(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _merge_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
-    """
-    Override pratici da environment.
-    """
     data = dict(raw)
 
     workspace = os.environ.get("PICOBOT_WORKSPACE", "").strip()
@@ -129,6 +115,7 @@ def _merge_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
     ollama_base = os.environ.get("PICOBOT_OLLAMA_BASE_URL", "").strip()
     ollama_model = os.environ.get("PICOBOT_OLLAMA_MODEL", "").strip()
     tg_token = os.environ.get("PICOBOT_TELEGRAM_BOT_TOKEN", "").strip()
+    web_search_url = os.environ.get("PICOBOT_WEB_SEARCH_URL", "").strip()
 
     if ollama_base or ollama_model:
         ollama = dict(data.get("ollama") or {})
@@ -143,13 +130,15 @@ def _merge_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         telegram["bot_token"] = tg_token
         data["telegram"] = telegram
 
+    if web_search_url:
+        web_search = dict(data.get("web_search") or {})
+        web_search["searxng_url"] = web_search_url
+        data["web_search"] = web_search
+
     return data
 
 
 def load_config(explicit_path: str | Path | None = None) -> Config:
-    """
-    Carica la configurazione, la valida e inizializza runtime_config.
-    """
     raw: dict[str, Any] = {}
     chosen: Path | None = None
 
@@ -168,8 +157,5 @@ def load_config(explicit_path: str | Path | None = None) -> Config:
     raw = _merge_env_overrides(raw)
 
     cfg = Config.model_validate(raw)
-
-    # Allinea il runtime lookup globale alla config validata.
     set_runtime_config(cfg)
-
     return cfg

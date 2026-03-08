@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-# Tool news_digest basato su SearXNG gestito automaticamente.
-#
-# Scelta semplice:
-# - usa i risultati news di SearXNG
-# - produce items già pronti per l'orchestrator
-# - niente fetch pesante delle pagine in questo passaggio
-#
-# Questo è sufficiente per:
-# - rassegna rapida
-# - risposta leggibile
-# - fallimento chiaro se il servizio web locale non parte
 from pydantic import BaseModel, Field
 
-from picobot.services.searxng import SearxngManager, SearxngUnavailableError
+from picobot.services.search_backend import WebSearchUnavailableError
+from picobot.services.web_search_service import WebSearchService
 from picobot.tools.base import ToolSpec, tool_error, tool_ok
 
 
@@ -25,20 +15,17 @@ class NewsDigestArgs(BaseModel):
 
 
 def make_news_digest_tool(cfg, workspace) -> ToolSpec:
-    """
-    Tool di news digest via SearXNG locale.
-    """
-    manager = SearxngManager(cfg)
+    _ = workspace
+    service = WebSearchService(cfg)
 
     async def _handler(args: NewsDigestArgs) -> dict:
         try:
-            items = manager.search(
+            items = service.search_news(
                 query=args.query,
                 count=args.count,
-                categories="news",
                 language=args.language,
             )
-        except SearxngUnavailableError as e:
+        except WebSearchUnavailableError as e:
             return tool_error(str(e))
         except Exception as e:
             return tool_error(f"news digest failed: {e}")
@@ -64,7 +51,7 @@ def make_news_digest_tool(cfg, workspace) -> ToolSpec:
 
     return ToolSpec(
         name="news_digest",
-        description="Current-news digest through locally managed SearXNG.",
+        description="Current-news digest through the configured local web-search backend.",
         schema=NewsDigestArgs,
         handler=_handler,
     )

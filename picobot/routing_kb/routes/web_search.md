@@ -3,7 +3,7 @@ id: tool:web_search
 kind: tool
 name: web_search
 title: Web Search
-description: Ricerca sul web tramite SearXNG locale per trovare fonti, pagine o risultati da elaborare.
+description: Ricerca sul web tramite backend locale di search per trovare fonti, pagine o risultati da elaborare.
 capabilities:
   - web search
   - source discovery
@@ -14,7 +14,6 @@ limitations:
 tags:
   - web
   - search
-  - searxng
   - sources
 example_queries:
   - cerca sul web verilator tracing docs
@@ -30,3 +29,6 @@ priority: 68
 
 Tool di ricerca web puro. È diverso da news_digest, che costruisce una
 rassegna o sintesi multi-fonte.
+
+Il backend concreto è un dettaglio infrastrutturale e non deve emergere
+nel runtime o nei messaggi verso l'utente.

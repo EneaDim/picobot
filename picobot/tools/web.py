@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from picobot.agent.prompts import detect_language
+from picobot.runtime_config import cfg_get
 from picobot.tools.base import ToolSpec, tool_error, tool_ok
 from picobot.tools.terminal_tool import TerminalToolBase
 
 
-class SandboxWebArgs(BaseModel):
+class WebToolArgs(BaseModel):
     url: str = Field(..., min_length=8)
     timeout_s: float = Field(default=8.0, ge=1.0, le=30.0)
     max_bytes: int = Field(default=200_000, ge=10_000, le=2_000_000)
@@ -18,33 +20,44 @@ class SandboxWebArgs(BaseModel):
     max_chars: int | None = Field(default=None)
 
 
-def _cfg_defaults(cfg):
-    sw = getattr(getattr(cfg, "sandbox", None), "web", None)
-    if not sw:
-        return {}
-    return {
-        "timeout_s": float(getattr(sw, "timeout_s", 8.0) or 8.0),
-        "max_bytes": int(getattr(sw, "max_bytes", 200_000) or 200_000),
-        "whitelist": list(getattr(sw, "whitelist", []) or []),
-    }
+def _cfg_value(cfg: Any | None, path: str, default: Any) -> Any:
+    if cfg is not None:
+        current = cfg
+        for part in path.split("."):
+            if hasattr(current, part):
+                current = getattr(current, part)
+            else:
+                return cfg_get(path, default)
+        return current
+    return cfg_get(path, default)
 
 
-def make_sandbox_web_tool(cfg=None):
-    runner = TerminalToolBase(allowed_bins=["python"], timeout_s=60, max_output_bytes=250_000)
-    defaults = _cfg_defaults(cfg) if cfg is not None else {}
+def make_web_tool(cfg=None):
+    allowed_bins = list(_cfg_value(cfg, "sandbox.exec.allowed_bins", ["python"]) or ["python"])
+    default_timeout = float(_cfg_value(cfg, "sandbox.web.timeout_s", 10.0) or 10.0)
+    default_max_bytes = int(_cfg_value(cfg, "sandbox.web.max_bytes", 200_000) or 200_000)
+    default_whitelist = list(_cfg_value(cfg, "sandbox.web.whitelist_domains", []) or [])
 
-    async def _handler(args: SandboxWebArgs | dict) -> dict:
+    runner = TerminalToolBase(
+        cfg=cfg,
+        allowed_bins=allowed_bins,
+        timeout_s=int(max(default_timeout, 1.0)),
+        max_output_bytes=int(_cfg_value(cfg, "sandbox.exec.max_output_bytes", 200_000) or 200_000),
+    )
+
+    async def _handler(args: WebToolArgs | dict) -> dict:
         try:
             if isinstance(args, dict):
-                args = SandboxWebArgs.model_validate(args)
+                args = WebToolArgs.model_validate(args)
 
-            timeout_s = float(getattr(args, "timeout_s", None) or defaults.get("timeout_s", 8.0))
-            max_bytes = int((args.max_chars or 0) or args.max_bytes or defaults.get("max_bytes", 200_000))
-            wl = args.whitelist or defaults.get("whitelist", [])
+            timeout_s = float(getattr(args, "timeout_s", None) or default_timeout)
+            max_bytes = int((args.max_chars or 0) or args.max_bytes or default_max_bytes)
+            wl = args.whitelist or default_whitelist
 
             u = urlparse(args.url)
             if u.scheme not in {"http", "https"}:
                 return tool_error("url must be http(s)")
+
             host = (u.hostname or "").lower().strip()
             if not host:
                 return tool_error("invalid url")
@@ -53,10 +66,18 @@ def make_sandbox_web_tool(cfg=None):
             if wl_norm and host not in set(wl_norm):
                 return tool_error("domain not allowed")
 
-            payload = json.dumps({"url": args.url, "timeout_s": timeout_s, "max_bytes": max_bytes}, ensure_ascii=False)
+            payload = json.dumps(
+                {
+                    "url": args.url,
+                    "timeout_s": timeout_s,
+                    "max_bytes": max_bytes,
+                },
+                ensure_ascii=False,
+            )
+
             res = runner.run_cmd(
                 ["python", "-I", "-c", _PY_FETCH],
-                prefix="[sandbox_web]",
+                prefix="[web]",
                 timeout_s=int(timeout_s) + 2,
                 input_bytes=payload.encode("utf-8"),
             )
@@ -69,8 +90,10 @@ def make_sandbox_web_tool(cfg=None):
 
             text = (data.get("text") or "").strip()
             lang = detect_language(text, default="it") if text else None
+
             return tool_ok(
                 {
+                    "backend": runner.backend,
                     "url": args.url,
                     "title": (data.get("title") or "").strip(),
                     "description": (data.get("description") or "").strip(),
@@ -84,9 +107,9 @@ def make_sandbox_web_tool(cfg=None):
             return tool_error(str(e))
 
     return ToolSpec(
-        name="sandbox_web",
-        description="Fetch a URL via sandbox runner (timeout + size cap + domain whitelist).",
-        schema=SandboxWebArgs,
+        name="web",
+        description="Fetch a URL inside the configured sandbox backend.",
+        schema=WebToolArgs,
         handler=_handler,
     )
 

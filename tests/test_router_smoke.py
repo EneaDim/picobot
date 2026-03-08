@@ -14,7 +14,7 @@ def test_router_smoke(tmp_path: Path):
     cases = [
         ("cerca nella kb come funziona il router", "kb_query"),
         ("/news intelligenza artificiale europa", "news_digest"),
-        ('tool sandbox_python {"code":"print(2+2)"}', "sandbox_python"),
+        ('tool python {"code":"print(2+2)"}', "python"),
         ("riassumi questo video https://youtu.be/ssYt09bCgUY", "youtube_summarizer"),
         ("ciao come stai?", "chat"),
     ]

@@ -6,11 +6,14 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
-from picobot.agent.orchestrator import Orchestrator
+from picobot.bus.events import OutboundMessage, inbound_text
+from picobot.bus.queue import MessageBus
 from picobot.config.init import init_project
 from picobot.config.loader import load_config
 from picobot.providers.ollama import OllamaProvider
+from picobot.runtime import AgentRuntime
 from picobot.session.manager import Session, SessionManager
 from picobot.tools.init_tools import bootstrap_all, resolve_config_path, tool_snapshot
 from picobot.ui import handle_command
@@ -199,6 +202,38 @@ def _run_tools_status_command(config_path: str | None) -> int:
     return 0
 
 
+def _map_status_text(status: TransientStatus, text: str) -> None:
+    raw = (text or "").strip().lower()
+
+    if "decido" in raw or "route" in raw or "percorso" in raw:
+        status.show("🧭 routing...")
+        return
+    if "thinking" in raw or "pensando" in raw:
+        status.show("💭 thinking...")
+        return
+    if "knowledge base" in raw or "kb" in raw or "retrieval" in raw:
+        status.show("🔎 retrieving...")
+        return
+    if "youtube" in raw or "transcript" in raw:
+        status.show("🎬 processing youtube...")
+        return
+    if "podcast" in raw or "audio" in raw:
+        status.show("🎙️ generating audio...")
+        return
+    if "news" in raw or "fonti" in raw:
+        status.show("📰 collecting sources...")
+        return
+
+    status.show(f"✨ {text}")
+
+
+async def _prompt_once(cli_input: CLIInput) -> str:
+    if cli_input.use_ptk and patch_stdout is not None:
+        with patch_stdout():
+            return await cli_input.prompt(_render_user_prompt())
+    return await cli_input.prompt(_render_user_prompt())
+
+
 async def _run_chat_cli(session_id: str) -> int:
     cfg = load_config()
     workspace = Path(cfg.workspace).expanduser().resolve()
@@ -213,7 +248,17 @@ async def _run_chat_cli(session_id: str) -> int:
         timeout_s=cfg.ollama.timeout_s,
     )
 
-    orch = Orchestrator(cfg, provider, workspace)
+    bus = MessageBus()
+    runtime = AgentRuntime(
+        bus=bus,
+        cfg=cfg,
+        provider=provider,
+        workspace=workspace,
+        session_manager=sm,
+    )
+
+    await bus.start()
+    await runtime.start()
 
     cli_ctx = CLIContext(session=session)
     cli_input = CLIInput(
@@ -221,100 +266,115 @@ async def _run_chat_cli(session_id: str) -> int:
         vi_mode=bool(getattr(cfg.ui, "vi_mode", False)),
     )
     status = TransientStatus()
+    outbound_queue: asyncio.Queue[OutboundMessage] = asyncio.Queue()
+
+    async def on_outbound(message) -> None:
+        if not isinstance(message, OutboundMessage):
+            return
+        if message.channel != "cli":
+            return
+        await outbound_queue.put(message)
+
+    unsubscribe = bus.subscribe("outbound.*", on_outbound)
 
     print(_render_banner(cli_ctx.session, workspace))
     print()
 
-    async def status_cb(text: str) -> None:
-        raw = (text or "").strip().lower()
-
-        if "decido" in raw or "route" in raw or "percorso" in raw:
-            status.show("🧭 routing...")
-            return
-        if "thinking" in raw or "pensando" in raw:
-            status.show("💭 thinking...")
-            return
-        if "knowledge base" in raw or "kb" in raw or "retrieval" in raw:
-            status.show("🔎 retrieving...")
-            return
-        if "youtube" in raw or "transcript" in raw:
-            status.show("🎬 processing youtube...")
-            return
-        if "podcast" in raw or "audio" in raw:
-            status.show("🎙️ generating audio...")
-            return
-        if "news" in raw or "fonti" in raw:
-            status.show("📰 collecting sources...")
-            return
-
-        status.show(f"✨ {text}")
-
-    async def _prompt_once() -> str:
-        if cli_input.use_ptk and patch_stdout is not None:
-            with patch_stdout():
-                return await cli_input.prompt(_render_user_prompt())
-        return await cli_input.prompt(_render_user_prompt())
-
-    while True:
-        try:
-            raw = await _prompt_once()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            print(_s("Bye 👋", FG_YELLOW))
-            return 0
-
-        user_text = (raw or "").strip()
-        if not user_text:
-            continue
-
-        cmd = handle_command(
-            user_text,
-            session=cli_ctx.session,
-            session_manager=sm,
-            cfg=cfg,
-            workspace=workspace,
-        )
-
-        if cmd.handled:
-            status.clear()
-
-            if cmd.new_session_id:
-                cli_ctx.session = sm.get(cmd.new_session_id)
-
-            if cmd.reply.strip():
-                print(_render_assistant(cmd.reply))
+    try:
+        while True:
+            try:
+                raw = await _prompt_once(cli_input)
+            except (EOFError, KeyboardInterrupt):
                 print()
-
-            if cmd.exit_requested:
+                print(_s("Bye 👋", FG_YELLOW))
                 return 0
 
-            continue
+            user_text = (raw or "").strip()
+            if not user_text:
+                continue
 
-        try:
-            status.show("🧭 routing...")
-
-            result = await orch.one_turn(
+            cmd = handle_command(
+                user_text,
                 session=cli_ctx.session,
-                user_text=user_text,
-                status=status_cb,
+                session_manager=sm,
+                cfg=cfg,
+                workspace=workspace,
             )
 
-            status.clear()
+            if cmd.handled:
+                status.clear()
 
-        except KeyboardInterrupt:
-            status.clear()
-            print()
-            print(_s("Interrotto.", FG_YELLOW))
-            print()
-            continue
-        except Exception as e:
-            status.clear()
-            print(_render_error(f"Errore non gestito: {e}"))
-            print()
-            continue
+                if cmd.new_session_id:
+                    cli_ctx.session = sm.get(cmd.new_session_id)
 
-        print(_render_assistant(result.content))
-        print()
+                if cmd.reply.strip():
+                    print(_render_assistant(cmd.reply))
+                    print()
+
+                if cmd.exit_requested:
+                    return 0
+
+                continue
+
+            correlation_id = uuid4().hex
+
+            try:
+                await bus.publish(
+                    inbound_text(
+                        channel="cli",
+                        chat_id=cli_ctx.session.session_id,
+                        session_id=cli_ctx.session.session_id,
+                        text=user_text,
+                        source="cli",
+                        correlation_id=correlation_id,
+                        metadata={"transport": "cli"},
+                    )
+                )
+
+                while True:
+                    outbound = await outbound_queue.get()
+
+                    if outbound.correlation_id != correlation_id:
+                        continue
+
+                    if outbound.message_type == "outbound.status":
+                        _map_status_text(status, str(outbound.payload.get("text") or ""))
+                        continue
+
+                    if outbound.message_type == "outbound.audio":
+                        audio_path = str(outbound.payload.get("audio_path") or "").strip()
+                        if audio_path:
+                            status.clear()
+                            print(_s(f"🎧 Audio generato: {audio_path}", DIM, FG_WHITE))
+                        continue
+
+                    if outbound.message_type == "outbound.error":
+                        status.clear()
+                        print(_render_error(str(outbound.payload.get("text") or "Errore runtime")))
+                        print()
+                        break
+
+                    if outbound.message_type == "outbound.text":
+                        status.clear()
+                        print(_render_assistant(str(outbound.payload.get("text") or "")))
+                        print()
+                        break
+
+            except KeyboardInterrupt:
+                status.clear()
+                print()
+                print(_s("Interrotto.", FG_YELLOW))
+                print()
+                continue
+            except Exception as e:
+                status.clear()
+                print(_render_error(f"Errore non gestito: {e}"))
+                print()
+                continue
+    finally:
+        unsubscribe()
+        await runtime.stop()
+        await bus.stop()
 
 
 def main() -> None:

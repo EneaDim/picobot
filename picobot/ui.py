@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from picobot.agent.router import deterministic_route
 from picobot.config.schema import Config
+from picobot.memory.stores import MemoryRepository
 from picobot.retrieval.ingest import ingest_kb
 from picobot.retrieval.store import copy_source_file, ensure_kb_dirs, list_kbs
 from picobot.session.manager import Session, SessionManager, sanitize_session_id
@@ -64,6 +66,10 @@ def _help_text() -> str:
     ).strip()
 
 
+def _repo(session: Session) -> MemoryRepository:
+    return MemoryRepository(session.workspace, session)
+
+
 def _session_info(session: Session) -> str:
     state = session.get_state()
     kb_name = str(state.get("kb_name") or "").strip() or "(nessuna)"
@@ -84,37 +90,61 @@ def _set_session_kb(session: Session, kb_name: str) -> str:
     return safe
 
 
-def _read_text_file(path: Path, default_header: str) -> str:
-    if not path.exists():
-        return default_header
-    try:
-        return path.read_text(encoding="utf-8").strip() or default_header
-    except Exception:
-        return default_header
-
-
 def _show_memory(session: Session) -> str:
-    memory_text = _read_text_file(session.memory_file, "# Memory")
-    summary_text = _read_text_file(session.summary_file, "# Session Summary")
-    history_text = _read_text_file(session.history_file, "# Session History")
+    repo = _repo(session)
+    repo.ensure_all()
+
+    facts = repo.facts.read_items()
+    summary = repo.summary.read()
+    history = repo.history.read_entries()
+
+    memory_block = "# Memory\n\n" + "\n".join(f"- {item}" for item in facts) if facts else "# Memory"
+
+    summary_lines = ["# Session Summary", ""]
+    summary_text = str(summary.get("summary_text") or "").strip()
+    if summary_text:
+        summary_lines.append(summary_text)
+        summary_lines.append("")
+    key_topics = [str(x).strip() for x in summary.get("key_topics") or [] if str(x).strip()]
+    if key_topics:
+        summary_lines.append("## Key Topics")
+        summary_lines.append("")
+        summary_lines.extend(f"- {item}" for item in key_topics)
+        summary_lines.append("")
+    open_loops = [str(x).strip() for x in summary.get("open_loops") or [] if str(x).strip()]
+    if open_loops:
+        summary_lines.append("## Open Loops")
+        summary_lines.append("")
+        summary_lines.extend(f"- {item}" for item in open_loops)
+        summary_lines.append("")
+
+    history_lines = ["# Session History", ""]
+    for row in history:
+        role = str(row.get("role") or "unknown").strip() or "unknown"
+        ts = str(row.get("ts") or "").strip()
+        content = str(row.get("content") or "").strip()
+        history_lines.append(f"## {role}")
+        history_lines.append("")
+        history_lines.append(f"- [{ts}] {content}" if ts else f"- {content}")
+        history_lines.append("")
 
     return (
-        "=== MEMORY ===\n"
-        f"{memory_text}\n\n"
+        "=== MEMORY FACTS ===\n"
+        f"{memory_block.strip()}\n\n"
         "=== SUMMARY ===\n"
-        f"{summary_text}\n\n"
+        f"{chr(10).join(summary_lines).strip()}\n\n"
         "=== HISTORY ===\n"
-        f"{history_text}"
+        f"{chr(10).join(history_lines).strip()}"
     ).strip()
 
 
 def _clear_memory(session: Session) -> str:
-    session.root.mkdir(parents=True, exist_ok=True)
-    session.history_file.write_text("# Session History\n\n", encoding="utf-8")
-    session.summary_file.write_text("# Session Summary\n\n", encoding="utf-8")
-    session.memory_file.parent.mkdir(parents=True, exist_ok=True)
-    session.memory_file.write_text("# Memory\n\n", encoding="utf-8")
-    return "✅ Memoria e storia pulite."
+    repo = _repo(session)
+    repo.ensure_all()
+    repo.history.clear()
+    repo.summary.clear()
+    repo.facts.clear()
+    return "✅ Memoria, summary e history pulite."
 
 
 def _resolve_play_path(raw_value: str, session: Session) -> Path | None:
@@ -261,90 +291,41 @@ def handle_command(
         sub = parts[1].lower()
 
         if sub == "list":
-            names = list_kbs(Path(workspace))
+            names = list_kbs(workspace)
             if not names:
                 return CommandResult(handled=True, reply="Nessuna KB trovata.")
-            lines = ["Knowledge base disponibili:", *[f"- {name}" for name in names]]
-            return CommandResult(handled=True, reply="\n".join(lines))
+            return CommandResult(handled=True, reply="Knowledge base disponibili:\n- " + "\n- ".join(names))
 
         if sub == "use" and len(parts) >= 3:
-            kb_name = sanitize_session_id(parts[2])
-            ensure_kb_dirs(Path(workspace), kb_name)
-            used = _set_session_kb(session, kb_name)
-            return CommandResult(handled=True, reply=f"✅ KB attiva impostata su: {used}")
+            kb_name = _set_session_kb(session, parts[2])
+            ensure_kb_dirs(workspace, kb_name)
+            return CommandResult(handled=True, reply=f"✅ KB attiva: {kb_name}")
 
         if sub == "ingest" and len(parts) >= 3:
-            marker = "/kb ingest"
-            tail = text[len(marker):].strip()
-            pdf_path = Path(tail).expanduser().resolve()
-
+            pdf_path = Path(" ".join(parts[2:])).expanduser().resolve()
             if not pdf_path.exists() or not pdf_path.is_file():
-                return CommandResult(handled=True, reply=f"File non trovato: {pdf_path}")
+                return CommandResult(handled=True, reply=f"PDF non trovato: {pdf_path}")
+            kb_name = str(session.get_state().get("kb_name") or cfg.default_kb_name or "default").strip()
+            ensure_kb_dirs(workspace, kb_name)
+            copied = copy_source_file(workspace, kb_name, pdf_path)
+            result = ingest_kb(cfg, workspace, kb_name=kb_name, source_path=copied)
+            return CommandResult(handled=True, reply=json.dumps(result, ensure_ascii=False, indent=2))
 
-            if pdf_path.suffix.lower() != ".pdf":
-                return CommandResult(handled=True, reply="Puoi indicizzare solo file PDF.")
-
-            state = session.get_state()
-            kb_name = str(state.get("kb_name") or cfg.default_kb_name or "default").strip()
-            ensure_kb_dirs(Path(workspace), kb_name)
-
-            copied = copy_source_file(Path(workspace), kb_name, pdf_path)
-            result = ingest_kb(Path(workspace), kb_name)
-
-            return CommandResult(
-                handled=True,
-                reply=(
-                    f"✅ PDF ingest completato.\n"
-                    f"KB: {kb_name}\n"
-                    f"Copiato in: {copied}\n"
-                    f"Chunk: {result.chunk_files}\n"
-                    f"Punti indicizzati: {result.indexed_points}"
-                ),
-            )
-
-        return CommandResult(
-            handled=True,
-            reply="Uso: /kb | /kb list | /kb use <name> | /kb ingest <pdf_path>",
-        )
+        return CommandResult(handled=True, reply="Uso: /kb | /kb list | /kb use <name> | /kb ingest <pdf_path>")
 
     if cmd == "/route":
-        query = text[len("/route"):].strip()
-        if not query:
+        probe = text[len("/route"):].strip()
+        if not probe:
             return CommandResult(handled=True, reply="Uso: /route <testo>")
-
         decision = deterministic_route(
-            user_text=query,
+            user_text=probe,
             state_file=session.state_file,
             default_language=cfg.default_language,
         )
-
-        lines = [
-            "Router decision:",
-            f"- action: {decision.action}",
-            f"- name: {decision.name}",
-            f"- score: {decision.score:.4f}",
-            f"- reason: {decision.reason}",
-        ]
-
-        if decision.candidates:
-            lines.append("")
-            lines.append("Top candidates:")
-            for idx, cand in enumerate(decision.candidates[:5], start=1):
-                lines.append(
-                    f"{idx}. {cand.record.id} "
-                    f"(name={cand.record.name}, "
-                    f"final={cand.final_score:.4f}, "
-                    f"vector={cand.vector_score:.4f}, "
-                    f"lexical={cand.lexical_score:.4f})"
-                )
-
-        return CommandResult(handled=True, reply="\n".join(lines))
+        return CommandResult(handled=True, reply=json.dumps(decision.__dict__, ensure_ascii=False, indent=2))
 
     if cmd == "/play":
-        arg = text[len("/play"):].strip()
-        return CommandResult(handled=True, reply=_play_audio(cfg, session, arg))
+        raw_value = text[len("/play"):].strip()
+        return CommandResult(handled=True, reply=_play_audio(cfg, session, raw_value))
 
-    return CommandResult(
-        handled=True,
-        reply="Comando non riconosciuto. Usa /help.",
-    )
+    return CommandResult(handled=False)
