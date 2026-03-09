@@ -45,6 +45,7 @@ FG_GREEN = "\033[92m"
 FG_YELLOW = "\033[93m"
 FG_WHITE = "\033[97m"
 FG_RED = "\033[91m"
+FG_BLUE = "\033[94m"
 
 
 def _s(text: str, *codes: str) -> str:
@@ -139,27 +140,62 @@ class CLIInput:
 
 class TransientStatus:
     def __init__(self) -> None:
-        self.current = ""
         self.enabled = True
+        self.base_text = ""
+        self._spinner_task: asyncio.Task | None = None
+        self._running = False
+        self._frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self._started_at = 0.0
 
-    def show(self, text: str) -> None:
+    def update(self, text: str) -> None:
+        self.base_text = (text or "").strip()
+
+    async def start(self, text: str = "processing...") -> None:
         if not self.enabled:
             return
-        self.current = text or ""
-        if not self.current:
+        self.base_text = (text or "").strip() or "processing..."
+        if self._running:
             return
-        sys.stdout.write(_clear_line())
-        sys.stdout.write(_s(self.current, DIM, FG_YELLOW))
-        sys.stdout.flush()
+        import time
+        self._started_at = time.time()
+        self._running = True
+        self._spinner_task = asyncio.create_task(self._spin_loop(), name="picobot-cli-spinner")
+
+    async def stop(self) -> None:
+        import time
+        elapsed = time.time() - float(self._started_at or 0.0)
+        if elapsed < 0.25:
+            await asyncio.sleep(0.25 - elapsed)
+
+        self._running = False
+        if self._spinner_task is not None:
+            try:
+                await self._spinner_task
+            except asyncio.CancelledError:
+                pass
+            self._spinner_task = None
+        self.clear()
 
     def clear(self) -> None:
         if not self.enabled:
             return
-        if not self.current:
-            return
         sys.stdout.write(_clear_line())
         sys.stdout.flush()
-        self.current = ""
+
+    async def _spin_loop(self) -> None:
+        idx = 0
+        try:
+            while self._running:
+                text = self.base_text or "processing..."
+                frame = self._frames[idx % len(self._frames)]
+                idx += 1
+                sys.stdout.write(_clear_line())
+                sys.stdout.write(_s(f"{frame} {text}", DIM, FG_YELLOW))
+                sys.stdout.flush()
+                await asyncio.sleep(0.12)
+        finally:
+            sys.stdout.write(_clear_line())
+            sys.stdout.flush()
 
 
 def _render_banner(session: Session, workspace: Path) -> str:
@@ -182,6 +218,10 @@ def _render_error(reply: str) -> str:
     return f"{_s('⚠️:', BOLD, FG_RED)} {reply.strip()}"
 
 
+def _render_debug(reply: str) -> str:
+    return f"{_s('DEBUG:', BOLD, FG_BLUE)} {reply.strip()}"
+
+
 def _run_init_command() -> int:
     result = init_project(force=False)
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -202,29 +242,24 @@ def _run_tools_status_command(config_path: str | None) -> int:
     return 0
 
 
-def _map_status_text(status: TransientStatus, text: str) -> None:
+def _map_status_text(text: str) -> str:
     raw = (text or "").strip().lower()
 
+    if "route scelta" in raw:
+        return text
     if "decido" in raw or "route" in raw or "percorso" in raw:
-        status.show("🧭 routing...")
-        return
+        return "routing..."
     if "thinking" in raw or "pensando" in raw:
-        status.show("💭 thinking...")
-        return
+        return "thinking..."
     if "knowledge base" in raw or "kb" in raw or "retrieval" in raw:
-        status.show("🔎 retrieving...")
-        return
+        return "retrieving..."
     if "youtube" in raw or "transcript" in raw:
-        status.show("🎬 processing youtube...")
-        return
+        return "processing youtube..."
     if "podcast" in raw or "audio" in raw:
-        status.show("🎙️ generating audio...")
-        return
+        return "generating audio..."
     if "news" in raw or "fonti" in raw:
-        status.show("📰 collecting sources...")
-        return
-
-    status.show(f"✨ {text}")
+        return "collecting sources..."
+    return text or "processing..."
 
 
 async def _prompt_once(cli_input: CLIInput) -> str:
@@ -232,6 +267,37 @@ async def _prompt_once(cli_input: CLIInput) -> str:
         with patch_stdout():
             return await cli_input.prompt(_render_user_prompt())
     return await cli_input.prompt(_render_user_prompt())
+
+
+def _debug_enabled(cfg) -> bool:
+    dbg = getattr(cfg, "debug", None)
+    return bool(getattr(dbg, "enabled", False))
+
+
+def _render_router_debug(metadata: dict) -> str | None:
+    route_action = str(metadata.get("route_action") or "").strip()
+    route_name = str(metadata.get("route_name") or "").strip()
+    route_reason = str(metadata.get("route_reason") or "").strip()
+    route_score = float(metadata.get("route_score") or 0.0)
+
+    if not route_name and not route_action:
+        return None
+
+    parts = [f"{route_action}:{route_name}", f"score={route_score:.3f}"]
+
+    if route_reason:
+        short_reason = route_reason.replace("\n", " ").strip()
+        if len(short_reason) > 120:
+            short_reason = short_reason[:117] + "..."
+        parts.append(f"reason={short_reason}")
+
+    candidates = list(metadata.get("route_candidates") or [])
+    if candidates:
+        short_candidates = " | ".join(str(x).strip() for x in candidates[:3] if str(x).strip())
+        if short_candidates:
+            parts.append(f"top={short_candidates}")
+
+    return "router -> " + " ; ".join(parts)
 
 
 async def _run_chat_cli(session_id: str) -> int:
@@ -302,7 +368,7 @@ async def _run_chat_cli(session_id: str) -> int:
             )
 
             if cmd.handled:
-                status.clear()
+                await status.stop()
 
                 if cmd.new_session_id:
                     cli_ctx.session = sm.get(cmd.new_session_id)
@@ -319,6 +385,8 @@ async def _run_chat_cli(session_id: str) -> int:
             correlation_id = uuid4().hex
 
             try:
+                await status.start("processing...")
+
                 await bus.publish(
                     inbound_text(
                         channel="cli",
@@ -338,36 +406,44 @@ async def _run_chat_cli(session_id: str) -> int:
                         continue
 
                     if outbound.message_type == "outbound.status":
-                        _map_status_text(status, str(outbound.payload.get("text") or ""))
+                        status.update(_map_status_text(str(outbound.payload.get("text") or "")))
                         continue
 
                     if outbound.message_type == "outbound.audio":
+                        await status.stop()
                         audio_path = str(outbound.payload.get("audio_path") or "").strip()
                         if audio_path:
-                            status.clear()
                             print(_s(f"🎧 Audio generato: {audio_path}", DIM, FG_WHITE))
                         continue
 
                     if outbound.message_type == "outbound.error":
-                        status.clear()
+                        await status.stop()
+                        if _debug_enabled(cfg):
+                            dbg = _render_router_debug(dict(outbound.metadata or {}))
+                            if dbg:
+                                print(_render_debug(dbg))
                         print(_render_error(str(outbound.payload.get("text") or "Errore runtime")))
                         print()
                         break
 
                     if outbound.message_type == "outbound.text":
-                        status.clear()
+                        await status.stop()
+                        if _debug_enabled(cfg):
+                            dbg = _render_router_debug(dict(outbound.metadata or {}))
+                            if dbg:
+                                print(_render_debug(dbg))
                         print(_render_assistant(str(outbound.payload.get("text") or "")))
                         print()
                         break
 
             except KeyboardInterrupt:
-                status.clear()
+                await status.stop()
                 print()
                 print(_s("Interrotto.", FG_YELLOW))
                 print()
                 continue
             except Exception as e:
-                status.clear()
+                await status.stop()
                 print(_render_error(f"Errore non gestito: {e}"))
                 print()
                 continue

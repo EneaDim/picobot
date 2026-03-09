@@ -64,12 +64,23 @@ class PersistentDockerSandboxManager:
         self.host_workspace_root.mkdir(parents=True, exist_ok=True)
 
     def ensure_container(self) -> None:
-        if self._is_running():
+        running, exists = self.inspect_state()
+
+        if running:
             return
 
-        if self._exists():
-            self._docker([self.docker_bin, "start", self.container_name], timeout_s=30)
-            if self._is_running():
+        if exists:
+            cp = self._docker(
+                [self.docker_bin, "start", self.container_name],
+                timeout_s=30,
+                check=False,
+            )
+            if cp.returncode != 0:
+                detail = (cp.stderr or cp.stdout or "").strip()
+                raise RuntimeError(f"failed to start existing sandbox container '{self.container_name}': {detail}")
+
+            running, exists = self.inspect_state()
+            if running:
                 return
 
         if not self.auto_create:
@@ -80,7 +91,15 @@ class PersistentDockerSandboxManager:
         if not self.image:
             raise RuntimeError("sandbox docker image is empty")
 
-        self._docker(
+        # cleanup eventuale residuo col nome uguale ma stato incoerente
+        cp_rm = self._docker(
+            [self.docker_bin, "rm", "-f", self.container_name],
+            timeout_s=20,
+            check=False,
+        )
+        _ = cp_rm
+
+        cp_run = self._docker(
             [
                 self.docker_bin,
                 "run",
@@ -97,10 +116,36 @@ class PersistentDockerSandboxManager:
                 "infinity",
             ],
             timeout_s=60,
+            check=False,
+        )
+        if cp_run.returncode != 0:
+            detail = (cp_run.stderr or cp_run.stdout or "").strip()
+            raise RuntimeError(
+                f"failed to create sandbox container '{self.container_name}' from image '{self.image}': {detail}"
+            )
+
+        running, exists = self.inspect_state()
+        if not running:
+            raise RuntimeError(f"failed to start sandbox container: {self.container_name}")
+
+    def inspect_state(self) -> tuple[bool, bool]:
+        cp = self._docker(
+            [
+                self.docker_bin,
+                "inspect",
+                "-f",
+                "{{.State.Running}}",
+                self.container_name,
+            ],
+            timeout_s=15,
+            check=False,
         )
 
-        if not self._is_running():
-            raise RuntimeError(f"failed to start sandbox container: {self.container_name}")
+        if cp.returncode != 0:
+            return False, False
+
+        value = (cp.stdout or "").strip().lower()
+        return value == "true", True
 
     def map_host_path(self, path: str | Path) -> str:
         target = Path(path).expanduser().resolve()
@@ -225,22 +270,6 @@ class PersistentDockerSandboxManager:
             (run.host_workdir / "run.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
-
-    def _exists(self) -> bool:
-        cp = self._docker(
-            [self.docker_bin, "inspect", self.container_name],
-            timeout_s=15,
-            check=False,
-        )
-        return cp.returncode == 0
-
-    def _is_running(self) -> bool:
-        cp = self._docker(
-            [self.docker_bin, "inspect", "-f", "{{.State.Running}}", self.container_name],
-            timeout_s=15,
-            check=False,
-        )
-        return cp.returncode == 0 and (cp.stdout or "").strip().lower() == "true"
 
     def _docker(
         self,

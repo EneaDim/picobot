@@ -24,11 +24,6 @@ logger = logging.getLogger(__name__)
 class AgentRuntime:
     """
     Primo runtime event-driven del progetto.
-
-    Scelta intenzionale:
-    - il runtime consuma inbound dal bus
-    - l'orchestrator attuale resta l'engine compatibile del singolo turno
-    - il runtime produce outbound e runtime events
     """
 
     def __init__(
@@ -190,9 +185,26 @@ class AgentRuntime:
                     "score": result.score,
                     "retrieval_hits": result.retrieval_hits,
                     "has_audio": bool(result.audio_path),
+                    "route_name": result.route_name,
+                    "route_action": result.route_action,
+                    "route_reason": result.route_reason,
+                    "route_score": result.route_score,
+                    "route_candidates": result.route_candidates or [],
                 },
             )
         )
+
+        common_meta = {
+            "action": result.action,
+            "reason": result.reason,
+            "score": result.score,
+            "retrieval_hits": result.retrieval_hits,
+            "route_name": result.route_name,
+            "route_action": result.route_action,
+            "route_reason": result.route_reason,
+            "route_score": result.route_score,
+            "route_candidates": result.route_candidates or [],
+        }
 
         if result.audio_path:
             await self.bus.publish(
@@ -204,10 +216,7 @@ class AgentRuntime:
                     caption="Audio generato",
                     correlation_id=message.correlation_id,
                     causation_id=message.message_id,
-                    metadata={
-                        "action": result.action,
-                        "reason": result.reason,
-                    },
+                    metadata=common_meta,
                 )
             )
 
@@ -219,11 +228,6 @@ class AgentRuntime:
                 text=result.content,
                 correlation_id=message.correlation_id,
                 causation_id=message.message_id,
-                metadata={
-                    "action": result.action,
-                    "reason": result.reason,
-                    "score": result.score,
-                    "retrieval_hits": result.retrieval_hits,
-                },
+                metadata=common_meta,
             )
         )

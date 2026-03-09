@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import inspect
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
+from typing import Any
 
 from picobot.agent.router import deterministic_route
 from picobot.config.schema import Config
@@ -13,12 +15,82 @@ from picobot.retrieval.store import copy_source_file, ensure_kb_dirs, list_kbs
 from picobot.session.manager import Session, SessionManager, sanitize_session_id
 
 
-@dataclass(frozen=True)
+def _jsonable(value: Any) -> Any:
+    if value is None:
+        return None
+
+    if is_dataclass(value):
+        return {k: _jsonable(v) for k, v in asdict(value).items()}
+
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(v) for v in value]
+
+    if isinstance(value, Path):
+        return str(value)
+
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        try:
+            return _jsonable(value.model_dump())
+        except Exception:
+            pass
+
+    if hasattr(value, "__dict__"):
+        try:
+            return {str(k): _jsonable(v) for k, v in vars(value).items()}
+        except Exception:
+            pass
+
+    return value
+
+
+def _decision_to_jsonable(decision: Any) -> dict[str, Any]:
+    base = _jsonable(decision)
+    if not isinstance(base, dict):
+        return {"value": base}
+
+    candidates = []
+    for item in base.get("candidates", []) or []:
+        if not isinstance(item, dict):
+            continue
+
+        record = item.get("record") or {}
+        if not isinstance(record, dict):
+            record = {}
+
+        candidates.append(
+            {
+                "route_id": record.get("id"),
+                "name": record.get("name"),
+                "kind": record.get("kind"),
+                "title": record.get("title"),
+                "final_score": item.get("final_score"),
+                "vector_score": item.get("vector_score"),
+                "lexical_score": item.get("lexical_score"),
+                "rerank_score": item.get("rerank_score"),
+                "reason": item.get("reason"),
+            }
+        )
+
+    base["candidates"] = candidates
+    return base
+
+
 class CommandResult:
-    handled: bool
-    reply: str = ""
-    new_session_id: str | None = None
-    exit_requested: bool = False
+    def __init__(
+        self,
+        *,
+        handled: bool,
+        reply: str = "",
+        new_session_id: str | None = None,
+        exit_requested: bool = False,
+    ) -> None:
+        self.handled = handled
+        self.reply = reply
+        self.new_session_id = new_session_id
+        self.exit_requested = exit_requested
 
 
 def _help_text() -> str:
@@ -194,6 +266,29 @@ def _play_audio(cfg: Config, session: Session, raw_value: str) -> str:
     return f"🔊 Riproduzione completata: {path}"
 
 
+def _run_ingest_kb(cfg: Config, workspace: Path, kb_name: str, source_path: Path):
+    sig = inspect.signature(ingest_kb)
+    params = list(sig.parameters.keys())
+
+    if params[:4] == ["cfg", "workspace", "kb_name", "source_path"]:
+        return ingest_kb(cfg, workspace, kb_name, source_path)
+
+    if params[:3] == ["cfg", "kb_name", "source_path"]:
+        return ingest_kb(cfg, kb_name, source_path)
+
+    kwargs = {}
+    if "cfg" in sig.parameters:
+        kwargs["cfg"] = cfg
+    if "workspace" in sig.parameters:
+        kwargs["workspace"] = workspace
+    if "kb_name" in sig.parameters:
+        kwargs["kb_name"] = kb_name
+    if "source_path" in sig.parameters:
+        kwargs["source_path"] = source_path
+
+    return ingest_kb(**kwargs)
+
+
 def handle_command(
     raw: str,
     *,
@@ -308,8 +403,11 @@ def handle_command(
             kb_name = str(session.get_state().get("kb_name") or cfg.default_kb_name or "default").strip()
             ensure_kb_dirs(workspace, kb_name)
             copied = copy_source_file(workspace, kb_name, pdf_path)
-            result = ingest_kb(cfg, workspace, kb_name=kb_name, source_path=copied)
-            return CommandResult(handled=True, reply=json.dumps(result, ensure_ascii=False, indent=2))
+            result = _run_ingest_kb(cfg, workspace, kb_name, copied)
+            return CommandResult(
+                handled=True,
+                reply=json.dumps(_jsonable(result), ensure_ascii=False, indent=2),
+            )
 
         return CommandResult(handled=True, reply="Uso: /kb | /kb list | /kb use <name> | /kb ingest <pdf_path>")
 
@@ -322,7 +420,10 @@ def handle_command(
             state_file=session.state_file,
             default_language=cfg.default_language,
         )
-        return CommandResult(handled=True, reply=json.dumps(decision.__dict__, ensure_ascii=False, indent=2))
+        return CommandResult(
+            handled=True,
+            reply=json.dumps(_decision_to_jsonable(decision), ensure_ascii=False, indent=2),
+        )
 
     if cmd == "/play":
         raw_value = text[len("/play"):].strip()

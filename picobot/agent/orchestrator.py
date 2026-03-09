@@ -37,6 +37,17 @@ def _first_youtube_url(text: str) -> str | None:
     return match.group(1).strip()
 
 
+def _format_candidates(decision: Any, limit: int = 3) -> list[str]:
+    out: list[str] = []
+    for idx, cand in enumerate(list(getattr(decision, "candidates", []) or [])[:limit], start=1):
+        record = getattr(cand, "record", None)
+        name = getattr(record, "name", "?")
+        kind = getattr(record, "kind", "?")
+        score = getattr(cand, "final_score", 0.0)
+        out.append(f"{idx}. {kind}:{name} score={float(score):.3f}")
+    return out
+
+
 @dataclass(slots=True)
 class TurnResult:
     content: str
@@ -46,6 +57,12 @@ class TurnResult:
     retrieval_hits: int = 0
     audio_path: str | None = None
     script: str | None = None
+
+    route_name: str | None = None
+    route_action: str | None = None
+    route_reason: str | None = None
+    route_score: float = 0.0
+    route_candidates: list[str] | None = None
 
 
 class Orchestrator:
@@ -101,23 +118,6 @@ class Orchestrator:
 
         for spec in tool_specs:
             self.tools.register(spec)
-
-    def _memory_context(
-        self,
-        session: Session,
-        *,
-        lang: str,
-        retrieval_context: str = "",
-        runtime_context: list[str] | None = None,
-        history_turns: int = 8,
-    ) -> str:
-        return self.context_builder.render_legacy_memory_block(
-            session=session,
-            lang=lang,
-            retrieval_context=retrieval_context,
-            runtime_context=runtime_context,
-            history_turns=history_turns,
-        )
 
     def _append_turn_memory(self, session: Session, user_text: str, assistant_text: str) -> None:
         mm = make_memory_manager(self.cfg, session, self.workspace)
@@ -482,6 +482,12 @@ class Orchestrator:
             default_language=lang,
         )
 
+        route_candidates = _format_candidates(decision)
+
+        if status:
+            route_label = f"{getattr(decision, 'action', '?')}:{getattr(decision, 'name', '?')}"
+            await status(f"🧭 Route scelta: {route_label}")
+
         if decision.action == "tool":
             result = await self._run_explicit_tool(
                 session=session,
@@ -504,6 +510,12 @@ class Orchestrator:
         if result.audio_path:
             self._store_audio_state(session, result.audio_path)
 
+        result.route_name = getattr(decision, "name", None)
+        result.route_action = getattr(decision, "action", None)
+        result.route_reason = getattr(decision, "reason", None)
+        result.route_score = float(getattr(decision, "score", 0.0) or 0.0)
+        result.route_candidates = route_candidates
+
         return TurnResult(
             content=result.content,
             action=result.action,
@@ -512,4 +524,9 @@ class Orchestrator:
             retrieval_hits=result.retrieval_hits,
             audio_path=result.audio_path,
             script=result.script,
+            route_name=result.route_name,
+            route_action=result.route_action,
+            route_reason=result.route_reason,
+            route_score=result.route_score,
+            route_candidates=result.route_candidates,
         )

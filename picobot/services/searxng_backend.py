@@ -78,6 +78,17 @@ class SearxngBackend:
             raise WebSearchUnavailableError(f"docker compose failed: {detail}") from e
         return proc
 
+    def _client(self, timeout: float) -> httpx.Client:
+        return httpx.Client(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; PicobotLocalSearch/1.0)",
+                "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
+                "Accept-Language": "it,en;q=0.8",
+            },
+        )
+
     def is_ready(self) -> bool:
         if not self.enabled:
             return False
@@ -89,7 +100,7 @@ class SearxngBackend:
 
         for url in urls:
             try:
-                with httpx.Client(timeout=self.health_timeout_s, follow_redirects=True) as client:
+                with self._client(self.health_timeout_s) as client:
                     res = client.get(url)
                     if res.status_code < 500:
                         return True
@@ -169,6 +180,43 @@ class SearxngBackend:
             f"Dettaglio:\n{short}"
         )
 
+    def _request_search_json(self, *, query: str, category: str, language: str):
+        params = {
+            "q": query,
+            "format": "json",
+            "categories": category,
+            "language": language,
+        }
+        with self._client(self.timeout_s) as client:
+            return client.get(f"{self.base_url}/search", params=params)
+
+    def _load_results(self, res: httpx.Response, *, query: str, category: str, language: str):
+        if res.status_code == 403:
+            if self.managed and self.auto_restart_on_failure:
+                self.restart()
+                if self.wait_ready(self.startup_timeout_s):
+                    retry = self._request_search_json(query=query, category=category, language=language)
+                    if retry.status_code != 403:
+                        retry.raise_for_status()
+                        return retry.json()
+
+            detail = (res.text or "").strip()
+            if len(detail) > 500:
+                detail = detail[:500] + "..."
+
+            logs = self.logs_tail(60)
+            short_logs = logs[-1200:].strip() if logs else "no logs available"
+
+            raise WebSearchUnavailableError(
+                "backend di ricerca web locale raggiungibile ma ha rifiutato la query JSON (HTTP 403).\n"
+                "Controlla la configurazione SearXNG locale, in particolare formato JSON / limiter / bot detection.\n"
+                f"Dettaglio: {detail or 'forbidden'}\n"
+                f"Logs recenti:\n{short_logs}"
+            )
+
+        res.raise_for_status()
+        return res.json()
+
     def search(
         self,
         *,
@@ -184,18 +232,12 @@ class SearxngBackend:
             return []
 
         limit = max(1, int(count or self.max_results))
-        params = {
-            "q": q,
-            "format": "json",
-            "categories": category,
-            "language": language,
-        }
 
         try:
-            with httpx.Client(timeout=self.timeout_s, follow_redirects=True) as client:
-                res = client.get(f"{self.base_url}/search", params=params)
-                res.raise_for_status()
-                data = res.json()
+            res = self._request_search_json(query=q, category=category, language=language)
+            data = self._load_results(res, query=q, category=category, language=language)
+        except WebSearchUnavailableError:
+            raise
         except httpx.TimeoutException as e:
             raise WebSearchUnavailableError("timeout durante la query al backend di ricerca web") from e
         except httpx.HTTPError as e:
