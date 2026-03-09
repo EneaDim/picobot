@@ -3,40 +3,53 @@ id: workflow:kb_query
 kind: workflow
 name: kb_query
 title: Knowledge Base Query
-description: Domande che devono essere risolte usando documenti locali già indicizzati nella knowledge base, con grounding documentale.
+description: Risponde a domande grounded usando il contenuto della knowledge base attiva o di documenti già ingestati.
 capabilities:
-  - document qa
-  - retrieval grounded answers
-  - lookup su pdf e documenti tecnici
-  - citazioni da documenti locali
+  - grounded qa
+  - retrieval
+  - document question answering
+  - kb lookup
 limitations:
-  - richiede kb attiva
-  - risponde solo con ciò che è recuperabile nei documenti indicizzati
+  - richiede contenuto rilevante già presente nella kb
+  - non importa nuovi documenti
 tags:
   - kb
-  - rag
-  - documents
-  - pdf
-  - local docs
   - retrieval
+  - document
+  - grounded
+  - context
 example_queries:
-  - nel documento cosa dice riguardo la retention?
-  - cerca nella kb sandbox runner
-  - dove viene definito il router?
-  - mi fai un riassunto basato solo sui documenti indicizzati?
-  - cosa dice la policy sul trattamento dati?
+  - cerca nella kb come funziona il router
+  - nel documento, quali sono le tre primitive centrali del runtime?
+  - nel documento, perché heartbeat non dovrebbe fare lavoro pesante direttamente?
+  - nel documento, qual è il ruolo del ContextBuilder?
+  - cosa dice il documento sul backend di ricerca web?
+  - secondo la knowledge base, come funziona il message bus?
 requires_kb: true
 requires_network: false
 enabled: true
-priority: 92
+priority: 96
 ---
 
 # kb_query
 
-Questa route è per query documentali grounded sulla KB locale.
+Usa questo workflow quando l'utente vuole una risposta grounded basata su:
 
-Va distinta da:
-- ingest di nuovi pdf
-- news sul web
-- tool sandbox espliciti
-- chat generale
+- documenti già ingestati
+- knowledge base attiva
+- testo presente nella KB
+- domande del tipo "nel documento..."
+- domande del tipo "cosa dice il testo..."
+- domande del tipo "secondo la KB..."
+
+Preferiscilo per:
+
+- domande esplicite sul contenuto documentale
+- spiegazioni basate su documenti locali
+- recupero di fatti presenti nella knowledge base
+
+Non usarlo per:
+
+- importare PDF o nuovi documenti
+- fare web search
+- eseguire tool sandbox

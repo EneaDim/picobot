@@ -13,6 +13,7 @@ def test_router_smoke(tmp_path: Path):
 
     cases = [
         ("cerca nella kb come funziona il router", "kb_query"),
+        ("nel documento, perché heartbeat non dovrebbe fare lavoro pesante direttamente?", "kb_query"),
         ("/news intelligenza artificiale europa", "news_digest"),
         ('tool python {"code":"print(2+2)"}', "python"),
         ("riassumi questo video https://youtu.be/ssYt09bCgUY", "youtube_summarizer"),

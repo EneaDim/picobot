@@ -3,33 +3,43 @@ id: workflow:kb_ingest_pdf
 kind: workflow
 name: kb_ingest_pdf
 title: Knowledge Base PDF Ingest
-description: Ingest o indicizzazione di un PDF nella knowledge base locale. È un'azione di caricamento, non una query sul contenuto.
+description: Importa o indicizza un PDF nella knowledge base locale attiva.
 capabilities:
-  - ingest pdf
-  - indicizzazione documento
-  - aggiunta documento alla kb
+  - kb ingest
+  - pdf import
+  - document indexing
+  - file ingestion
 limitations:
-  - non risponde al contenuto del documento
-  - richiede path o riferimento a file pdf
+  - non risponde a domande sul contenuto
+  - richiede un file o un'azione esplicita di ingest
 tags:
   - kb
   - ingest
   - pdf
-  - document
+  - import
   - index
 example_queries:
-  - ingest pdf ./docs/manuale.pdf
-  - indicizza pdf ./contratto.pdf
-  - aggiungi questo pdf alla kb ./docs/report.pdf
-  - importa documento ./docs/policy.pdf
-  - /kb ingest ./docs/architettura.pdf
+  - /kb ingest docs/manuale.pdf
+  - importa questo pdf nella kb
+  - indicizza questo documento pdf
+  - aggiungi questo file pdf alla knowledge base
 requires_kb: false
 requires_network: false
 enabled: true
-priority: 85
+priority: 28
 ---
 
 # kb_ingest_pdf
 
-Questa route va scelta quando l’utente vuole caricare o indicizzare un PDF
-nella knowledge base locale, non quando vuole chiedere cosa contiene.
+Usa questo workflow solo quando l'utente vuole:
+
+- caricare un PDF nella knowledge base
+- indicizzare un documento
+- aggiungere un file alla KB
+- importare un PDF per retrieval futuro
+
+Non usarlo per:
+
+- domande del tipo "nel documento..."
+- domande sul contenuto della KB
+- richieste di risposta grounded su documenti già ingestati

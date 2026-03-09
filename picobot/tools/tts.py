@@ -1,310 +1,201 @@
 from __future__ import annotations
 
-import asyncio
-import json
-import re
-import wave
-from dataclasses import dataclass
+import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from picobot.tools.base import ToolSpec, tool_ok
-
-
-@dataclass(frozen=True)
-class TTSResult:
-    audio_path: str
-    format: str
-    voice_id: str
-    backend: str
-    ok: bool
-    detail: str = ""
-
-
-def _slug(text: str, fallback: str = "tts") -> str:
-    value = re.sub(r"[^a-zA-Z0-9._-]+", "-", (text or "").strip().lower()).strip("-.")
-    return value or fallback
-
-
-def _tools_cfg(cfg):
-    return getattr(cfg, "tools", None)
-
-
-def _podcast_cfg(cfg):
-    return getattr(cfg, "podcast", None)
-
-
-def _resolve_piper_bin(cfg) -> str:
-    tools = _tools_cfg(cfg)
-    if tools is None:
-        return ""
-    for candidate in [
-        getattr(tools, "piper_bin", ""),
-        getattr(getattr(tools, "bins", None), "piper", ""),
-    ]:
-        value = str(candidate or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _resolve_ffmpeg_bin(cfg) -> str:
-    tools = _tools_cfg(cfg)
-    if tools is None:
-        return "ffmpeg"
-    for candidate in [
-        getattr(tools, "ffmpeg_bin", ""),
-        getattr(getattr(tools, "bins", None), "ffmpeg", ""),
-        "ffmpeg",
-    ]:
-        value = str(candidate or "").strip()
-        if value:
-            return value
-    return "ffmpeg"
-
-
-def _voice_id_for_lang(cfg, lang: str) -> str:
-    pcfg = _podcast_cfg(cfg)
-    if pcfg is None:
-        return ""
-    try:
-        voices = getattr(pcfg, "voices", None)
-        if voices is None:
-            return ""
-        lang_block = getattr(voices, "en" if str(lang).lower().startswith("en") else "it", None)
-        if lang_block is None:
-            return ""
-        narrator = getattr(lang_block, "narrator", None)
-        if narrator is None:
-            return ""
-        return str(getattr(narrator, "voice_id", "") or "").strip()
-    except Exception:
-        return ""
-
-
-def _model_for_lang(cfg, lang: str) -> str:
-    tools = _tools_cfg(cfg)
-    if tools is None:
-        return ""
-    if str(lang).lower().startswith("en"):
-        for candidate in [
-            getattr(tools, "piper_model_en", ""),
-            getattr(getattr(tools, "models", None), "piper_en", ""),
-        ]:
-            value = str(candidate or "").strip()
-            if value:
-                return value
-        return ""
-    for candidate in [
-        getattr(tools, "piper_model_it", ""),
-        getattr(getattr(tools, "models", None), "piper_it", ""),
-    ]:
-        value = str(candidate or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _write_placeholder_wav(path: Path, seconds: float = 0.4, sample_rate: int = 22050) -> None:
-    nframes = max(1, int(seconds * sample_rate))
-    silence = b"\x00\x00" * nframes
-    with wave.open(str(path), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        wav.writeframes(silence)
-
-
-async def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(cwd) if cwd else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out_b, err_b = await proc.communicate()
-    return int(proc.returncode or 0), out_b.decode("utf-8", errors="replace"), err_b.decode("utf-8", errors="replace")
-
-
-async def synthesize_speech(
-    cfg,
-    *,
-    text: str,
-    lang: str = "it",
-    voice_id: str | None = None,
-    output_dir: str | Path | None = None,
-    output_stem: str = "speech",
-) -> TTSResult:
-    """
-    Funzione riusabile anche fuori dal tool registry.
-    """
-    target_dir = Path(output_dir or getattr(getattr(cfg, "podcast", None), "output_dir", "outputs/podcasts")).expanduser().resolve()
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    stem = _slug(output_stem, fallback="speech")
-    wav_path = target_dir / f"{stem}.wav"
-    mp3_path = target_dir / f"{stem}.mp3"
-    input_txt = target_dir / f"{stem}.txt"
-    meta_path = target_dir / f"{stem}.meta.json"
-
-    backend = str(getattr(getattr(cfg, "podcast", None), "tts_backend", "piper") or "piper").lower()
-    chosen_voice = (voice_id or _voice_id_for_lang(cfg, lang)).strip()
-    model_path = _model_for_lang(cfg, lang)
-    piper_bin = _resolve_piper_bin(cfg)
-    ffmpeg_bin = _resolve_ffmpeg_bin(cfg)
-
-    input_txt.write_text((text or "").strip(), encoding="utf-8")
-
-    meta = {
-        "backend": backend,
-        "voice_id": chosen_voice,
-        "lang": lang,
-        "model_path": model_path,
-        "piper_bin": piper_bin,
-    }
-
-    if backend != "piper":
-        _write_placeholder_wav(wav_path)
-        meta["detail"] = f"unsupported backend: {backend}"
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        return TTSResult(
-            audio_path=str(wav_path),
-            format="wav",
-            voice_id=chosen_voice,
-            backend=backend,
-            ok=False,
-            detail=meta["detail"],
-        )
-
-    if not piper_bin or not Path(piper_bin).expanduser().exists():
-        _write_placeholder_wav(wav_path)
-        meta["detail"] = "piper binary not available"
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        return TTSResult(
-            audio_path=str(wav_path),
-            format="wav",
-            voice_id=chosen_voice,
-            backend=backend,
-            ok=False,
-            detail=meta["detail"],
-        )
-
-    if not model_path or not Path(model_path).expanduser().exists():
-        _write_placeholder_wav(wav_path)
-        meta["detail"] = "piper model not available"
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        return TTSResult(
-            audio_path=str(wav_path),
-            format="wav",
-            voice_id=chosen_voice,
-            backend=backend,
-            ok=False,
-            detail=meta["detail"],
-        )
-
-    cmd = [
-        str(Path(piper_bin).expanduser()),
-        "--model",
-        str(Path(model_path).expanduser()),
-        "--output_file",
-        str(wav_path),
-    ]
-
-    exit_code, _so, err = await _run(cmd, cwd=target_dir)
-
-    if exit_code != 0:
-        _write_placeholder_wav(wav_path)
-        meta["detail"] = f"piper failed: {err.strip()}"
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        return TTSResult(
-            audio_path=str(wav_path),
-            format="wav",
-            voice_id=chosen_voice,
-            backend=backend,
-            ok=False,
-            detail=meta["detail"],
-        )
-
-    audio_format = str(getattr(getattr(cfg, "podcast", None), "audio_format", "mp3") or "mp3").lower()
-
-    if audio_format == "mp3":
-        ffmpeg_path = Path(ffmpeg_bin).expanduser()
-        ffmpeg_cmd = [
-            str(ffmpeg_path) if ffmpeg_path.exists() else "ffmpeg",
-            "-y",
-            "-i",
-            str(wav_path),
-            str(mp3_path),
-        ]
-        ff_exit, _ffso, fferr = await _run(ffmpeg_cmd, cwd=target_dir)
-        if ff_exit == 0 and mp3_path.exists():
-            meta["detail"] = ""
-            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-            return TTSResult(
-                audio_path=str(mp3_path),
-                format="mp3",
-                voice_id=chosen_voice,
-                backend=backend,
-                ok=True,
-                detail="",
-            )
-        meta["detail"] = f"ffmpeg conversion failed: {fferr.strip()}"
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        return TTSResult(
-            audio_path=str(wav_path),
-            format="wav",
-            voice_id=chosen_voice,
-            backend=backend,
-            ok=True,
-            detail=meta["detail"],
-        )
-
-    meta["detail"] = ""
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    return TTSResult(
-        audio_path=str(wav_path),
-        format="wav",
-        voice_id=chosen_voice,
-        backend=backend,
-        ok=True,
-        detail="",
-    )
+from picobot.tools.base import ToolSpec, tool_error, tool_ok
+from picobot.tools.paths import get_tool_bin, get_tool_model, resolve_repo_path, sibling_lib_dirs
 
 
 class TTSArgs(BaseModel):
     text: str = Field(..., min_length=1)
     lang: str = Field(default="it")
-    voice_id: str | None = None
-    output_dir: str | None = None
-    output_stem: str = Field(default="speech")
+    voice_id: str | None = Field(default=None)
+    output_path: str | None = Field(default=None)
 
 
-def make_tts_tool(cfg) -> ToolSpec:
-    async def _handler(args: TTSArgs) -> dict:
-        result = await synthesize_speech(
+def _pick_model(cfg, lang: str) -> str:
+    if (lang or "").lower().startswith("it"):
+        return get_tool_model(
             cfg,
-            text=args.text,
-            lang=args.lang,
-            voice_id=args.voice_id,
-            output_dir=args.output_dir,
-            output_stem=args.output_stem,
+            "piper_it",
+            ".picobot/tools/piper/models/it_IT-paola-medium.onnx",
         )
-        return tool_ok(
-            {
-                "audio_path": result.audio_path,
-                "format": result.format,
-                "voice_id": result.voice_id,
-                "backend": result.backend,
-                "ok": result.ok,
-                "detail": result.detail,
-            },
-            language=args.lang,
+    return get_tool_model(
+        cfg,
+        "piper_en",
+        ".picobot/tools/piper/models/en_US-lessac-medium.onnx",
+    )
+
+
+def _default_output_dir() -> Path:
+    out_dir = Path(resolve_repo_path("outputs/podcasts"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _build_output_path(
+    *,
+    lang: str,
+    output_path: str | None = None,
+    output_dir: str | None = None,
+    file_stem: str | None = None,
+    audio_format: str | None = None,
+) -> str:
+    if str(output_path or "").strip():
+        return resolve_repo_path(output_path)
+
+    ext = "wav"
+    requested_ext = str(audio_format or "").strip().lower()
+    if requested_ext == "wav":
+        ext = "wav"
+
+    if str(output_dir or "").strip():
+        out_dir = Path(resolve_repo_path(output_dir))
+    else:
+        out_dir = _default_output_dir()
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = str(file_stem or "").strip()
+    if not stem:
+        suffix = "it" if (lang or "").lower().startswith("it") else "en"
+        stem = f"tts_output_{suffix}_{uuid4().hex[:8]}"
+
+    return str((out_dir / f"{stem}.{ext}").resolve())
+
+
+def _build_piper_env(piper_bin: str) -> dict[str, str]:
+    piper_path = Path(piper_bin).expanduser().resolve()
+    piper_root = piper_path.parent.parent
+
+    env = dict()
+    lib_dirs = sibling_lib_dirs(piper_bin)
+    if lib_dirs:
+        env["LD_LIBRARY_PATH"] = ":".join(lib_dirs)
+
+    espeak_data = piper_root / "espeak-ng-data"
+    if espeak_data.exists() and espeak_data.is_dir():
+        env["ESPEAK_DATA_PATH"] = str(espeak_data.resolve())
+
+    return env
+
+
+def synthesize_speech(
+    cfg,
+    text: str,
+    *,
+    lang: str = "it",
+    voice_id: str | None = None,
+    output_path: str | None = None,
+    output_dir: str | None = None,
+    file_stem: str | None = None,
+    audio_format: str | None = None,
+    **_: object,
+) -> str:
+    _ = voice_id
+
+    if not str(text or "").strip():
+        raise ValueError("text is empty")
+
+    piper_bin = get_tool_bin(cfg, "piper", ".picobot/tools/piper/bin/piper")
+    if not piper_bin:
+        raise RuntimeError("piper binary not configured")
+
+    model_path = _pick_model(cfg, lang)
+    if not model_path:
+        raise RuntimeError("piper model path not configured")
+
+    piper_bin_path = Path(piper_bin).expanduser().resolve()
+    model_path_obj = Path(model_path).expanduser().resolve()
+
+    if not piper_bin_path.exists():
+        raise RuntimeError(f"piper binary not found: {piper_bin_path}")
+
+    if not model_path_obj.exists():
+        raise RuntimeError(f"piper model not found: {model_path_obj}")
+
+    final_output = _build_output_path(
+        lang=lang,
+        output_path=output_path,
+        output_dir=output_dir,
+        file_stem=file_stem,
+        audio_format=audio_format,
+    )
+    Path(final_output).parent.mkdir(parents=True, exist_ok=True)
+
+    env = dict(**_build_piper_env(str(piper_bin_path)))
+    # eredita env di processo
+    import os
+    merged_env = dict(os.environ)
+    merged_env.update(env)
+
+    try:
+        cp = subprocess.run(
+            [str(piper_bin_path), "--model", str(model_path_obj), "--output_file", str(final_output)],
+            input=(str(text).rstrip() + "\n").encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=120,
+            env=merged_env,
         )
+    except FileNotFoundError as e:
+        raise RuntimeError(f"piper binary not found: {piper_bin_path}") from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("piper timed out") from e
+
+    stdout = (cp.stdout or b"").decode("utf-8", errors="ignore").strip()
+    stderr = (cp.stderr or b"").decode("utf-8", errors="ignore").strip()
+
+    if cp.returncode != 0:
+        err = stderr or stdout or "tts failed"
+
+        if "libpiper_phonemize.so" in err or "error while loading shared libraries" in err:
+            raise RuntimeError(
+                "Piper runtime incompleto: il binario esiste ma mancano librerie condivise richieste "
+                "(es. libpiper_phonemize.so.*) oppure non sono nel LD_LIBRARY_PATH del bundle tool."
+            )
+
+        if "espeak-ng-data" in err or "phontab" in err:
+            raise RuntimeError(
+                "Piper runtime incompleto o configurato male: espeak-ng-data non trovato dal bundle locale."
+            )
+
+        raise RuntimeError(err)
+
+    if not Path(final_output).exists():
+        raise RuntimeError(f"tts output not created: {final_output}")
+
+    return final_output
+
+
+def make_tts_tool(cfg=None) -> ToolSpec:
+    async def _handler(args: TTSArgs) -> dict:
+        try:
+            audio_path = synthesize_speech(
+                cfg,
+                args.text,
+                lang=args.lang,
+                voice_id=args.voice_id,
+                output_path=args.output_path,
+            )
+            return tool_ok(
+                {
+                    "audio_path": audio_path,
+                    "backend": "local",
+                },
+                language=args.lang,
+            )
+        except Exception as e:
+            return tool_error(str(e))
 
     return ToolSpec(
         name="tts",
-        description="Local text-to-speech synthesis using configured local backend.",
+        description="Generate speech audio using Piper.",
         schema=TTSArgs,
         handler=_handler,
     )

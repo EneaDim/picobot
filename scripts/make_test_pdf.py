@@ -5,43 +5,87 @@ from pathlib import Path
 from textwrap import wrap
 
 
+PAGE_WIDTH = 595
+PAGE_HEIGHT = 842
+MARGIN_LEFT = 50
+MARGIN_TOP = 790
+MARGIN_BOTTOM = 60
+LINE_HEIGHT = 14
+LINES_PER_PAGE = int((MARGIN_TOP - MARGIN_BOTTOM) / LINE_HEIGHT)
+
+
 def pdf_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
-def build_pdf(lines: list[str]) -> bytes:
-    page_width = 595
-    page_height = 842
-    margin_left = 50
-    margin_top = 790
-    line_height = 14
+def chunk_pages(lines: list[str]) -> list[list[str]]:
+    pages: list[list[str]] = []
+    for i in range(0, len(lines), LINES_PER_PAGE):
+        pages.append(lines[i:i + LINES_PER_PAGE])
+    return pages or [[""]]
 
+
+def build_page_stream(lines: list[str]) -> bytes:
     content_lines = ["BT", "/F1 11 Tf"]
-    y = margin_top
+    y = MARGIN_TOP
     for line in lines:
-        if y < 60:
-            break
         safe = pdf_escape(line)
-        content_lines.append(f"1 0 0 1 {margin_left} {y} Tm ({safe}) Tj")
-        y -= line_height
+        content_lines.append(f"1 0 0 1 {MARGIN_LEFT} {y} Tm ({safe}) Tj")
+        y -= LINE_HEIGHT
     content_lines.append("ET")
-    content_stream = "\n".join(content_lines).encode("latin-1", errors="replace")
+    return "\n".join(content_lines).encode("latin-1", errors="replace")
 
-    objects = []
+
+def build_pdf(lines: list[str]) -> bytes:
+    pages = chunk_pages(lines)
+    objects: list[bytes] = []
 
     def add_object(data: bytes) -> int:
         objects.append(data)
         return len(objects)
 
-    obj1 = add_object(b"<< /Type /Catalog /Pages 2 0 R >>")
-    obj2 = add_object(b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
-    obj3 = add_object(
-        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width} {page_height}] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".encode()
-    )
-    obj4 = add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    obj5 = add_object(
-        b"<< /Length " + str(len(content_stream)).encode() + b" >>\nstream\n" + content_stream + b"\nendstream"
-    )
+    # Placeholder ids built in order:
+    # 1 catalog
+    # 2 pages
+    # then for each page: page obj, content obj
+    # final font obj
+    catalog_id = add_object(b"<< /Type /Catalog /Pages 2 0 R >>")
+
+    kids_refs = []
+    page_object_ids = []
+    content_object_ids = []
+
+    add_object(b"<< /Type /Pages /Kids [] /Count 0 >>")  # placeholder pages obj
+
+    for page_lines in pages:
+        stream = build_page_stream(page_lines)
+        page_obj_id = len(objects) + 1
+        content_obj_id = len(objects) + 2
+
+        page_object_ids.append(page_obj_id)
+        content_object_ids.append(content_obj_id)
+        kids_refs.append(f"{page_obj_id} 0 R")
+
+        add_object(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_WIDTH} {PAGE_HEIGHT}] "
+            f"/Resources << /Font << /F1 0 0 R >> >> /Contents {content_obj_id} 0 R >>".encode()
+        )
+        add_object(
+            b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream"
+        )
+
+    font_obj_id = add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    # Patch page objects with actual font ref
+    for idx, page_obj_id in enumerate(page_object_ids):
+        content_obj_id = content_object_ids[idx]
+        objects[page_obj_id - 1] = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_WIDTH} {PAGE_HEIGHT}] "
+            f"/Resources << /Font << /F1 {font_obj_id} 0 R >> >> /Contents {content_obj_id} 0 R >>".encode()
+        )
+
+    # Patch pages object
+    objects[1] = f"<< /Type /Pages /Kids [{' '.join(kids_refs)}] /Count {len(page_object_ids)} >>".encode()
 
     offsets = []
     out = bytearray()
@@ -61,7 +105,7 @@ def build_pdf(lines: list[str]) -> bytes:
 
     out.extend(
         (
-            f"trailer\n<< /Size {len(objects) + 1} /Root {obj1} 0 R >>\n"
+            f"trailer\n<< /Size {len(objects) + 1} /Root {catalog_id} 0 R >>\n"
             f"startxref\n{xref_pos}\n%%EOF\n"
         ).encode()
     )

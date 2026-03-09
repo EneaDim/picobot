@@ -6,6 +6,7 @@ from typing import Awaitable, Callable
 from pydantic import BaseModel, Field
 
 from picobot.tools.base import ToolSpec, tool_error, tool_ok
+from picobot.tools.paths import resolve_repo_path
 from picobot.tools.terminal_tool import TerminalToolBase
 
 LLMSummarize = Callable[[str, str, str | None], Awaitable[str]]
@@ -27,7 +28,11 @@ class YTSummaryArgs(BaseModel):
 
 def _normalize_ytdlp_bin(ytdlp_bin: str) -> str:
     value = str(ytdlp_bin or "").strip()
-    return value or "yt-dlp"
+    if not value:
+        return "yt-dlp"
+    if "/" not in value and "\\" not in value and not value.startswith("."):
+        return value
+    return resolve_repo_path(value)
 
 
 def _extract_transcript_with_ytdlp_cmd(url: str, prefer_sub_langs: list[str]) -> list[str]:
@@ -41,6 +46,18 @@ def _extract_transcript_with_ytdlp_cmd(url: str, prefer_sub_langs: list[str]) ->
         "--print", "after_move:subtitle:%(filepath)s",
         url,
     ]
+
+
+def _clean_ytdlp_error(text: str) -> str:
+    raw = (text or "").strip()
+    if "HTTP Error 429" in raw or "Too Many Requests" in raw:
+        return (
+            "YouTube sta limitando temporaneamente il download dei sottotitoli/transcript (HTTP 429 Too Many Requests). "
+            "Riprova più tardi oppure cambia video."
+        )
+    if raw:
+        return raw
+    return "yt-dlp failed"
 
 
 def make_yt_transcript_tool(ytdlp_bin: str, ytdlp_args: list[str] | None = None):
@@ -63,7 +80,7 @@ def make_yt_transcript_tool(ytdlp_bin: str, ytdlp_args: list[str] | None = None)
             )
 
             if res.returncode != 0:
-                return tool_error((res.stderr or "yt-dlp failed")[:2000])
+                return tool_error(_clean_ytdlp_error((res.stderr or "") + "\n" + (res.stdout or ""))[:2000])
 
             lines = [line.strip() for line in (res.stdout or "").splitlines() if line.strip()]
             subtitle_paths = [line for line in lines if line.endswith(".vtt") or line.endswith(".srv3") or line.endswith(".ttml")]
@@ -113,7 +130,7 @@ def make_yt_summary_tool(
             )
 
             if res.returncode != 0:
-                return tool_error((res.stderr or "yt-dlp failed")[:2000])
+                return tool_error(_clean_ytdlp_error((res.stderr or "") + "\n" + (res.stdout or ""))[:2000])
 
             lines = [line.strip() for line in (res.stdout or "").splitlines() if line.strip()]
             subtitle_paths = [line for line in lines if line.endswith(".vtt") or line.endswith(".srv3") or line.endswith(".ttml")]

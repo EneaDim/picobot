@@ -16,6 +16,7 @@ from picobot.session.manager import Session
 from picobot.tools.base import ToolError
 from picobot.tools.file import make_file_tool
 from picobot.tools.news_digest import NewsDigestArgs, make_news_digest_tool
+from picobot.tools.paths import get_tool_bin
 from picobot.tools.podcast import detect_podcast_request, generate_podcast
 from picobot.tools.python import make_python_tool
 from picobot.tools.registry import ToolRegistry
@@ -80,8 +81,9 @@ class Orchestrator:
         if self.tools.list():
             return
 
-        ytdlp_bin = str(getattr(self.cfg.tools, "ytdlp_bin", "") or "")
-        ytdlp_args = list(getattr(self.cfg.tools, "ytdlp_args", []) or [])
+        ytdlp_bin = get_tool_bin(self.cfg, "ytdlp", "yt-dlp")
+        youtube_cfg = getattr(self.cfg.tools, "youtube", None)
+        ytdlp_args = list(getattr(youtube_cfg, "ytdlp_args", []) or [])
 
         async def _llm_summarize(transcript: str, url: str, lang: str | None) -> str:
             lan = detect_language(transcript or url, default=self.cfg.default_language)

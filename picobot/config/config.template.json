@@ -123,6 +123,10 @@
       "timeout_s": 10,
       "max_bytes": 200000,
       "whitelist_domains": [
+        "github.com",
+        "ollama.com",
+        "docs.ollama.com",
+        "python.org",
         "reuters.com",
         "apnews.com",
         "bbc.co.uk",

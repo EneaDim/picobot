@@ -1,152 +1,139 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable
 
-from picobot.agent.prompts import (
-    detect_language,
-    podcast_script_system_prompt,
-    podcast_script_user_prompt,
-)
+from picobot.agent.prompts import detect_language, system_base_context
 from picobot.tools.tts import synthesize_speech
 
 StatusCb = Callable[[str], Awaitable[None]]
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True)
 class PodcastResult:
-    audio_path: str
+    topic: str
+    lang: str
     script: str
-    run_dir: str
+    audio_path: str
 
 
-def _slug(s: str, max_len: int = 48) -> str:
-    text = (s or "").strip().lower()
-    text = re.sub(r"\s+", "-", text)
-    text = re.sub(r"[^a-z0-9_\-]+", "", text)
-    text = text.strip("-_")
-    return text[: max(12, int(max_len))] or "podcast"
+def _normalize_text(value: str | None) -> str:
+    return str(value or "").strip()
 
 
-def _utc_stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-
-
-def _norm_lang(lang: str | None, default: str = "it") -> str:
-    value = (lang or "").strip().lower()
-    if value.startswith("en"):
-        return "en"
-    if value.startswith("it"):
-        return "it"
-    fallback = (default or "it").strip().lower()
-    return "en" if fallback.startswith("en") else "it"
-
-
-def detect_podcast_request(text: str, cfg) -> Optional[tuple[str, str]]:
-    raw = (text or "").strip()
-    if not raw:
+def detect_podcast_request(user_text: str, cfg=None) -> tuple[str, str] | None:
+    text = _normalize_text(user_text)
+    if not text:
         return None
 
-    pcfg = getattr(cfg, "podcast", None)
-    if not pcfg or not getattr(pcfg, "enabled", False):
-        return None
+    low = text.lower()
 
-    default_lang = getattr(cfg, "default_language", "it")
-    lang = detect_language(raw, default=default_lang)
-    low = raw.lower()
+    podcast_cfg = getattr(cfg, "podcast", None)
 
-    triggers = []
-    try:
-        tcfg = getattr(pcfg, "triggers", None)
-        if tcfg:
-            triggers = list(getattr(tcfg, lang) or [])
-    except Exception:
-        triggers = []
+    triggers_it = []
+    triggers_en = []
 
-    for trig in triggers:
-        t = (trig or "").strip().lower()
-        if not t:
-            continue
-        if low.startswith(t):
-            topic = raw[len(trig):].strip(" \t\r\n:,-")
-            return (topic or "podcast", lang)
+    if podcast_cfg is not None:
+        triggers = getattr(podcast_cfg, "triggers", None)
+        if triggers is not None:
+            triggers_it = list(getattr(triggers, "it", []) or [])
+            triggers_en = list(getattr(triggers, "en", []) or [])
 
-    if low.startswith("podcast"):
-        topic = raw[len("podcast"):].strip(" \t\r\n:,-")
-        return (topic or "podcast", lang)
+    default_it = [
+        "voglio un podcast su",
+        "fammi un podcast su",
+        "/podcast",
+    ]
+    default_en = [
+        "i want a podcast about",
+        "make a podcast about",
+    ]
+
+    for trig in [*triggers_it, *default_it]:
+        t = _normalize_text(trig).lower()
+        if t and low.startswith(t):
+            topic = text[len(trig):].strip() if len(text) >= len(trig) else ""
+            return topic, "it"
+
+    for trig in [*triggers_en, *default_en]:
+        t = _normalize_text(trig).lower()
+        if t and low.startswith(t):
+            topic = text[len(trig):].strip() if len(text) >= len(trig) else ""
+            return topic, "en"
 
     return None
 
 
-def _workspace(cfg) -> Path:
-    return Path(getattr(cfg, "workspace", ".picobot/workspace")).expanduser().resolve()
+def _target_words(cfg, minutes: int) -> int:
+    podcast_cfg = getattr(cfg, "podcast", None)
+    wpm = int(getattr(podcast_cfg, "target_words_per_minute", 150) or 150) if podcast_cfg else 150
+    return max(120, int(minutes) * wpm)
 
 
-def _output_root(cfg) -> Path:
-    out = str(getattr(getattr(cfg, "podcast", None), "output_dir", "") or "outputs/podcasts")
-    path = Path(out).expanduser()
-    if not path.is_absolute():
-        path = (_workspace(cfg) / path).resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+def _default_minutes(cfg) -> int:
+    podcast_cfg = getattr(cfg, "podcast", None)
+    return int(getattr(podcast_cfg, "default_minutes", 1) or 1) if podcast_cfg else 1
 
 
-def _run_dir(cfg, topic: str) -> Path:
-    run = _output_root(cfg) / f"{_utc_stamp()}_{_slug(topic)}"
-    run.mkdir(parents=True, exist_ok=True)
-    return run
+def _output_dir(cfg) -> str:
+    podcast_cfg = getattr(cfg, "podcast", None)
+    value = str(getattr(podcast_cfg, "output_dir", "outputs/podcasts") or "outputs/podcasts") if podcast_cfg else "outputs/podcasts"
+    return value
 
 
-async def _generate_script(cfg, provider, *, topic: str, lang: str) -> str:
-    pcfg = getattr(cfg, "podcast", None)
-    minutes = int(getattr(pcfg, "default_minutes", 1) or 1)
-    max_minutes = int(getattr(pcfg, "max_minutes", 2) or 2)
-    wpm = int(getattr(pcfg, "target_words_per_minute", 150) or 150)
+def _audio_format(cfg) -> str:
+    podcast_cfg = getattr(cfg, "podcast", None)
+    fmt = str(getattr(podcast_cfg, "audio_format", "wav") or "wav") if podcast_cfg else "wav"
+    # Piper helper attuale genera wav. Manteniamo coerenza.
+    return "wav" if fmt.lower() != "wav" else "wav"
 
-    minutes = max(1, min(minutes, max(1, max_minutes)))
 
-    response = await provider.chat(
-        messages=[
-            {"role": "system", "content": podcast_script_system_prompt(lang)},
-            {"role": "user", "content": podcast_script_user_prompt(topic, lang, minutes, wpm)},
-        ],
-        tools=None,
-        max_tokens=1200,
-        temperature=0.3,
+def _safe_stem(text: str) -> str:
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", _normalize_text(text).lower()).strip("-")
+    return stem[:60] or "podcast"
+
+
+def _build_script_prompt(topic: str, *, lang: str, target_words: int) -> tuple[str, str]:
+    if (lang or "").lower().startswith("it"):
+        system_prompt = system_base_context("it")
+        user_prompt = (
+            "Scrivi un breve script per un podcast in italiano.\n"
+            "\n"
+            "Vincoli:\n"
+            f"- argomento: {topic}\n"
+            f"- lunghezza target: circa {target_words} parole\n"
+            "- tono chiaro, naturale, informativo\n"
+            "- niente introduzioni meta sul fatto che sei un AI\n"
+            "- niente markdown\n"
+            "- testo pronto per essere letto ad alta voce\n"
+            "- chiudi con una conclusione breve\n"
+        )
+        return system_prompt, user_prompt
+
+    system_prompt = system_base_context("en")
+    user_prompt = (
+        "Write a short podcast script in English.\n"
+        "\n"
+        "Constraints:\n"
+        f"- topic: {topic}\n"
+        f"- target length: around {target_words} words\n"
+        "- clear, natural, informative tone\n"
+        "- no meta commentary about being an AI\n"
+        "- no markdown\n"
+        "- text should be ready to be read aloud\n"
+        "- end with a short conclusion\n"
     )
-
-    text = (response.content or "").strip()
-    if not text:
-        if lang == "it":
-            text = f"Oggi parliamo di {topic}. In questo breve episodio vediamo i punti principali in modo semplice e concreto."
-        else:
-            text = f"Today we talk about {topic}. In this short episode we cover the main points in a simple and concrete way."
-
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+    return system_prompt, user_prompt
 
 
-def _write_artifacts(run_dir: Path, script: str, topic: str, lang: str) -> tuple[Path, Path]:
-    script_path = run_dir / "script.txt"
-    meta_path = run_dir / "meta.json"
-
-    script_path.write_text(script, encoding="utf-8")
-    meta_path.write_text(
-        json.dumps(
-            {
-                "topic": topic,
-                "lang": lang,
-                "script_path": str(script_path),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return script_path, meta_path
+async def _call_status(status: StatusCb | None, text: str) -> None:
+    if status is None:
+        return
+    await status(text)
 
 
 async def generate_podcast(
@@ -155,44 +142,75 @@ async def generate_podcast(
     *,
     topic: str,
     lang: str | None = None,
+    minutes: int | None = None,
     status: StatusCb | None = None,
 ) -> PodcastResult:
-    raw_topic = (topic or "").strip() or "podcast"
-    language = _norm_lang(lang, default=getattr(cfg, "default_language", "it"))
+    topic = _normalize_text(topic)
+    if not topic:
+        raise ValueError("podcast topic is empty")
 
-    if status:
-        await status("📝 Sto scrivendo il copione…")
+    final_lang = _normalize_text(lang) or detect_language(topic, default="it")
+    final_minutes = int(minutes or _default_minutes(cfg))
+    target_words = _target_words(cfg, final_minutes)
 
-    run_dir = _run_dir(cfg, raw_topic)
-    script = await _generate_script(cfg, provider, topic=raw_topic, lang=language)
-    script_path, meta_path = _write_artifacts(run_dir, script, raw_topic, language)
+    await _call_status(status, "📝 Sto scrivendo lo script del podcast…")
 
-    if status:
-        await status("🔊 Sto sintetizzando l’audio…")
-
-    tts_res = await synthesize_speech(
-        cfg,
-        text=script,
-        lang=language,
-        output_dir=run_dir,
-        output_stem="podcast",
+    system_prompt, user_prompt = _build_script_prompt(
+        topic,
+        lang=final_lang,
+        target_words=target_words,
     )
 
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception:
-        meta = {}
+    resp = await provider.chat(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        tools=None,
+        max_tokens=1400,
+        temperature=0.4,
+    )
 
-    meta["audio_path"] = tts_res.audio_path
-    meta["tts_backend"] = tts_res.backend
-    meta["tts_ok"] = tts_res.ok
-    meta["tts_detail"] = tts_res.detail
-    meta["script_path"] = str(script_path)
+    script = _normalize_text(getattr(resp, "content", ""))
+    if not script:
+        raise RuntimeError("podcast script generation returned empty content")
 
+    out_dir = _output_dir(cfg)
+    fmt = _audio_format(cfg)
+    stem = _safe_stem(topic)
+
+    await _call_status(status, "🎤 Sto sintetizzando l'audio del podcast…")
+
+    audio_path = await asyncio.to_thread(
+        synthesize_speech,
+        cfg,
+        script,
+        lang=final_lang,
+        output_dir=out_dir,
+        file_stem=stem,
+        audio_format=fmt,
+    )
+
+    meta = {
+        "topic": topic,
+        "lang": final_lang,
+        "minutes": final_minutes,
+        "target_words": target_words,
+        "audio_path": audio_path,
+    }
+
+    out_dir_path = Path(out_dir).expanduser().resolve()
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+
+    script_path = out_dir_path / f"{stem}.txt"
+    meta_path = out_dir_path / f"{stem}.meta.json"
+
+    script_path.write_text(script, encoding="utf-8")
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return PodcastResult(
-        audio_path=tts_res.audio_path,
+        topic=topic,
+        lang=final_lang,
         script=script,
-        run_dir=str(run_dir),
+        audio_path=audio_path,
     )

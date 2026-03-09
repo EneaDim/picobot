@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import inspect
 import json
+import shutil
 import subprocess
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from picobot.agent.router import deterministic_route
 from picobot.config.schema import Config
@@ -13,6 +14,21 @@ from picobot.memory.stores import MemoryRepository
 from picobot.retrieval.ingest import ingest_kb
 from picobot.retrieval.store import copy_source_file, ensure_kb_dirs, list_kbs
 from picobot.session.manager import Session, SessionManager, sanitize_session_id
+
+
+class CommandResult:
+    def __init__(
+        self,
+        *,
+        handled: bool,
+        reply: str = "",
+        new_session_id: str | None = None,
+        exit_requested: bool = False,
+    ) -> None:
+        self.handled = handled
+        self.reply = reply
+        self.new_session_id = new_session_id
+        self.exit_requested = exit_requested
 
 
 def _jsonable(value: Any) -> Any:
@@ -78,21 +94,6 @@ def _decision_to_jsonable(decision: Any) -> dict[str, Any]:
     return base
 
 
-class CommandResult:
-    def __init__(
-        self,
-        *,
-        handled: bool,
-        reply: str = "",
-        new_session_id: str | None = None,
-        exit_requested: bool = False,
-    ) -> None:
-        self.handled = handled
-        self.reply = reply
-        self.new_session_id = new_session_id
-        self.exit_requested = exit_requested
-
-
 def _help_text() -> str:
     return (
         "Comandi disponibili:\n"
@@ -123,15 +124,17 @@ def _help_text() -> str:
         "/route <testo>\n"
         "  mostra la decisione del router\n"
         "\n"
-        "/news <query>\n"
-        "  rassegna news via workflow\n"
+        "/podcasts\n"
+        "  mostra i podcast disponibili\n"
         "\n"
-        "/podcast <topic>\n"
-        "  genera un podcast\n"
-        "\n"
-        "/play <wav_path>\n"
         "/play last\n"
-        "  riproduce un file wav locale con aplay\n"
+        "/play <numero>\n"
+        "/play <path>\n"
+        "  riproduce un audio locale\n"
+        "\n"
+        "/news <query>\n"
+        "/podcast <topic>\n"
+        "  workflow gestiti dal runtime\n"
         "\n"
         "/exit\n"
         "  esce dalla CLI\n"
@@ -177,12 +180,14 @@ def _show_memory(session: Session) -> str:
     if summary_text:
         summary_lines.append(summary_text)
         summary_lines.append("")
+
     key_topics = [str(x).strip() for x in summary.get("key_topics") or [] if str(x).strip()]
     if key_topics:
         summary_lines.append("## Key Topics")
         summary_lines.append("")
         summary_lines.extend(f"- {item}" for item in key_topics)
         summary_lines.append("")
+
     open_loops = [str(x).strip() for x in summary.get("open_loops") or [] if str(x).strip()]
     if open_loops:
         summary_lines.append("## Open Loops")
@@ -219,53 +224,6 @@ def _clear_memory(session: Session) -> str:
     return "✅ Memoria, summary e history pulite."
 
 
-def _resolve_play_path(raw_value: str, session: Session) -> Path | None:
-    value = (raw_value or "").strip()
-
-    if value == "last":
-        last = str(session.get_state().get("last_audio_path") or "").strip()
-        if not last:
-            return None
-        return Path(last).expanduser().resolve()
-
-    if not value:
-        return None
-
-    return Path(value).expanduser().resolve()
-
-
-def _play_audio(cfg: Config, session: Session, raw_value: str) -> str:
-    path = _resolve_play_path(raw_value, session)
-    if path is None:
-        return "Uso: /play <wav_path> oppure /play last"
-
-    if not path.exists() or not path.is_file():
-        return f"File audio non trovato: {path}"
-
-    if path.suffix.lower() != ".wav":
-        return (
-            "Per ora /play usa aplay ed è pensato per file .wav.\n"
-            f"File ricevuto: {path.name}"
-        )
-
-    aplay_bin = str(getattr(getattr(cfg, "tools", None), "aplay_bin", "aplay") or "aplay").strip()
-
-    try:
-        subprocess.run(
-            [aplay_bin, str(path)],
-            check=True,
-        )
-    except FileNotFoundError:
-        return f"Comando aplay non trovato: {aplay_bin}"
-    except subprocess.CalledProcessError as e:
-        return f"Riproduzione fallita con exit code {e.returncode}: {path}"
-    except Exception as e:
-        return f"Errore durante la riproduzione audio: {e}"
-
-    session.set_state({"last_audio_path": str(path)})
-    return f"🔊 Riproduzione completata: {path}"
-
-
 def _run_ingest_kb(cfg: Config, workspace: Path, kb_name: str, source_path: Path):
     sig = inspect.signature(ingest_kb)
     params = list(sig.parameters.keys())
@@ -289,6 +247,254 @@ def _run_ingest_kb(cfg: Config, workspace: Path, kb_name: str, source_path: Path
     return ingest_kb(**kwargs)
 
 
+def _podcast_dir(cfg: Config) -> Path:
+    raw = str(getattr(cfg.podcast, "output_dir", "outputs/podcasts") or "outputs/podcasts").strip()
+    return Path(raw).expanduser().resolve()
+
+
+def list_podcasts(cfg: Config) -> list[Path]:
+    pdir = _podcast_dir(cfg)
+    if not pdir.exists():
+        return []
+
+    return sorted(
+        [p for p in pdir.glob("*.wav") if p.is_file()],
+        key=lambda x: x.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def play_audio(path: Path) -> tuple[bool, str]:
+    path = path.expanduser().resolve()
+
+    if not path.exists() or not path.is_file():
+        return False, f"File audio non trovato: {path}"
+
+    candidates = [
+        ["aplay", str(path)],
+        ["ffplay", "-nodisp", "-autoexit", str(path)],
+        ["mpv", str(path)],
+    ]
+
+    errors: list[str] = []
+
+    for cmd in candidates:
+        exe = cmd[0]
+        if shutil.which(exe) is None:
+            errors.append(f"{exe}: non disponibile")
+            continue
+
+        try:
+            subprocess.run(cmd, check=True)
+            return True, exe
+        except subprocess.CalledProcessError as e:
+            errors.append(f"{exe}: exit code {e.returncode}")
+        except Exception as e:
+            errors.append(f"{exe}: {e}")
+
+    return False, " ; ".join(errors) if errors else "nessun player disponibile"
+
+
+def _generate_new_session_id(session_manager: SessionManager, requested: str | None) -> str:
+    if requested and str(requested).strip():
+        return sanitize_session_id(requested)
+
+    existing = set(session_manager.list())
+    idx = 1
+    candidate = f"session-{idx}"
+    while candidate in existing:
+        idx += 1
+        candidate = f"session-{idx}"
+    return candidate
+
+
+def _handle_help() -> CommandResult:
+    return CommandResult(handled=True, reply=_help_text())
+
+
+def _handle_exit() -> CommandResult:
+    return CommandResult(handled=True, reply="A presto 👋", exit_requested=True)
+
+
+def _handle_new(parts: list[str], session_manager: SessionManager) -> CommandResult:
+    requested = parts[1] if len(parts) >= 2 else ""
+    session_id = _generate_new_session_id(session_manager, requested)
+    session_manager.get(session_id)
+    return CommandResult(
+        handled=True,
+        reply=f"✅ Nuova sessione attiva: {session_id}",
+        new_session_id=session_id,
+    )
+
+
+def _handle_session(parts: list[str], session: Session, session_manager: SessionManager) -> CommandResult:
+    if len(parts) == 1:
+        return CommandResult(handled=True, reply=_session_info(session))
+
+    sub = parts[1].lower()
+
+    if sub == "list":
+        sessions = session_manager.list()
+        if not sessions:
+            return CommandResult(handled=True, reply="Nessuna sessione trovata.")
+        return CommandResult(
+            handled=True,
+            reply="Sessioni disponibili:\n- " + "\n- ".join(sessions),
+        )
+
+    if sub == "set" and len(parts) >= 3:
+        new_id = sanitize_session_id(parts[2])
+        session_manager.get(new_id)
+        return CommandResult(
+            handled=True,
+            reply=f"✅ Sessione attiva: {new_id}",
+            new_session_id=new_id,
+        )
+
+    return CommandResult(
+        handled=True,
+        reply="Uso: /session | /session list | /session set <id>",
+    )
+
+
+def _handle_memory(parts: list[str], session: Session) -> CommandResult:
+    sub = parts[1].lower() if len(parts) >= 2 else "show"
+
+    if sub == "show":
+        return CommandResult(handled=True, reply=_show_memory(session))
+
+    if sub == "clear":
+        return CommandResult(handled=True, reply=_clear_memory(session))
+
+    return CommandResult(handled=True, reply="Uso: /mem show | /mem clear")
+
+
+def _handle_kb(parts: list[str], session: Session, cfg: Config, workspace: Path) -> CommandResult:
+    if len(parts) == 1:
+        return CommandResult(handled=True, reply=_session_info(session))
+
+    sub = parts[1].lower()
+
+    if sub == "list":
+        names = list_kbs(workspace)
+        if not names:
+            return CommandResult(handled=True, reply="Nessuna KB trovata.")
+        return CommandResult(
+            handled=True,
+            reply="Knowledge base disponibili:\n- " + "\n- ".join(names),
+        )
+
+    if sub == "use" and len(parts) >= 3:
+        kb_name = _set_session_kb(session, parts[2])
+        ensure_kb_dirs(workspace, kb_name)
+        return CommandResult(handled=True, reply=f"✅ KB attiva: {kb_name}")
+
+    if sub == "ingest" and len(parts) >= 3:
+        pdf_path = Path(" ".join(parts[2:])).expanduser().resolve()
+        if not pdf_path.exists() or not pdf_path.is_file():
+            return CommandResult(handled=True, reply=f"PDF non trovato: {pdf_path}")
+
+        kb_name = str(session.get_state().get("kb_name") or cfg.default_kb_name or "default").strip()
+        ensure_kb_dirs(workspace, kb_name)
+        copied = copy_source_file(workspace, kb_name, pdf_path)
+        result = _run_ingest_kb(cfg, workspace, kb_name, copied)
+
+        return CommandResult(
+            handled=True,
+            reply=json.dumps(_jsonable(result), ensure_ascii=False, indent=2),
+        )
+
+    return CommandResult(
+        handled=True,
+        reply="Uso: /kb | /kb list | /kb use <name> | /kb ingest <pdf_path>",
+    )
+
+
+def _handle_route(text: str, session: Session, cfg: Config) -> CommandResult:
+    probe = text[len("/route"):].strip()
+    if not probe:
+        return CommandResult(handled=True, reply="Uso: /route <testo>")
+
+    decision = deterministic_route(
+        user_text=probe,
+        state_file=session.state_file,
+        default_language=cfg.default_language,
+    )
+    return CommandResult(
+        handled=True,
+        reply=json.dumps(_decision_to_jsonable(decision), ensure_ascii=False, indent=2),
+    )
+
+
+def _handle_podcasts(cfg: Config) -> CommandResult:
+    files = list_podcasts(cfg)
+    if not files:
+        return CommandResult(handled=True, reply="Nessun podcast disponibile.")
+
+    lines = ["🎧 Podcast disponibili:", ""]
+    for idx, path in enumerate(files, start=1):
+        lines.append(f"{idx}. {path.stem}")
+    lines.append("")
+    lines.append("Usa: /play last  oppure  /play <numero>  oppure  /play <path>")
+
+    return CommandResult(handled=True, reply="\n".join(lines))
+
+
+def _resolve_play_target(cfg: Config, session: Session, raw_value: str) -> tuple[Path | None, str | None]:
+    value = str(raw_value or "").strip()
+    files = list_podcasts(cfg)
+
+    if value == "last":
+        last = str(session.get_state().get("last_audio_path") or "").strip()
+        if last:
+            path = Path(last).expanduser().resolve()
+            if path.exists() and path.is_file():
+                return path, None
+        if files:
+            return files[0], None
+        return None, "Nessun podcast disponibile."
+
+    if value.isdigit():
+        idx = int(value) - 1
+        if idx < 0 or idx >= len(files):
+            return None, "Numero podcast non valido."
+        return files[idx], None
+
+    if value:
+        direct = Path(value).expanduser().resolve()
+        if direct.exists() and direct.is_file():
+            return direct, None
+        return None, f"File audio non trovato: {direct}"
+
+    return None, "Uso: /play last  oppure  /play <numero>  oppure  /play <path>"
+
+
+def _handle_play(text: str, cfg: Config, session: Session) -> CommandResult:
+    raw_value = text[len("/play"):].strip()
+    target, err = _resolve_play_target(cfg, session, raw_value)
+
+    if target is None:
+        return CommandResult(handled=True, reply=err or "Target audio non valido.")
+
+    ok, detail = play_audio(target)
+
+    if ok:
+        session.set_state({"last_audio_path": str(target)})
+        return CommandResult(
+            handled=True,
+            reply=f"▶️ Riproduco: {target.name}",
+        )
+
+    return CommandResult(
+        handled=True,
+        reply=(
+            f"Riproduzione automatica non disponibile.\n"
+            f"File audio: {target}\n"
+            f"Dettaglio player: {detail}"
+        ),
+    )
+
+
 def handle_command(
     raw: str,
     *,
@@ -297,7 +503,7 @@ def handle_command(
     cfg: Config,
     workspace: Path,
 ) -> CommandResult:
-    text = (raw or "").strip()
+    text = str(raw or "").strip()
     if not text.startswith("/"):
         return CommandResult(handled=False)
 
@@ -315,118 +521,23 @@ def handle_command(
     if cmd in passthrough_commands:
         return CommandResult(handled=False)
 
-    if cmd in {"/help", "/start"}:
-        return CommandResult(handled=True, reply=_help_text())
+    handlers: dict[str, Callable[[], CommandResult]] = {
+        "/help": _handle_help,
+        "/start": _handle_help,
+        "/exit": _handle_exit,
+        "/quit": _handle_exit,
+        "/new": lambda: _handle_new(parts, session_manager),
+        "/session": lambda: _handle_session(parts, session, session_manager),
+        "/mem": lambda: _handle_memory(parts, session),
+        "/memory": lambda: _handle_memory(parts, session),
+        "/kb": lambda: _handle_kb(parts, session, cfg, workspace),
+        "/route": lambda: _handle_route(text, session, cfg),
+        "/podcasts": lambda: _handle_podcasts(cfg),
+        "/play": lambda: _handle_play(text, cfg, session),
+    }
 
-    if cmd in {"/exit", "/quit"}:
-        return CommandResult(handled=True, reply="A presto 👋", exit_requested=True)
+    handler = handlers.get(cmd)
+    if handler is None:
+        return CommandResult(handled=False)
 
-    if cmd == "/new":
-        requested = parts[1] if len(parts) >= 2 else ""
-        session_id = sanitize_session_id(requested or "session")
-        if not requested:
-            existing = set(session_manager.list())
-            base = "session"
-            idx = 1
-            candidate = f"{base}-{idx}"
-            while candidate in existing:
-                idx += 1
-                candidate = f"{base}-{idx}"
-            session_id = candidate
-
-        _ = session_manager.get(session_id)
-        return CommandResult(
-            handled=True,
-            reply=f"✅ Nuova sessione attiva: {session_id}",
-            new_session_id=session_id,
-        )
-
-    if cmd == "/session":
-        if len(parts) == 1:
-            return CommandResult(handled=True, reply=_session_info(session))
-
-        sub = parts[1].lower()
-
-        if sub == "list":
-            sessions = session_manager.list()
-            if not sessions:
-                return CommandResult(handled=True, reply="Nessuna sessione trovata.")
-            lines = ["Sessioni disponibili:", *[f"- {sid}" for sid in sessions]]
-            return CommandResult(handled=True, reply="\n".join(lines))
-
-        if sub == "set" and len(parts) >= 3:
-            new_id = sanitize_session_id(parts[2])
-            _ = session_manager.get(new_id)
-            return CommandResult(
-                handled=True,
-                reply=f"✅ Sessione attiva: {new_id}",
-                new_session_id=new_id,
-            )
-
-        return CommandResult(
-            handled=True,
-            reply="Uso: /session | /session list | /session set <id>",
-        )
-
-    if cmd in {"/mem", "/memory"}:
-        sub = parts[1].lower() if len(parts) >= 2 else "show"
-
-        if sub == "show":
-            return CommandResult(handled=True, reply=_show_memory(session))
-
-        if sub == "clear":
-            return CommandResult(handled=True, reply=_clear_memory(session))
-
-        return CommandResult(handled=True, reply="Uso: /mem show | /mem clear")
-
-    if cmd == "/kb":
-        if len(parts) == 1:
-            return CommandResult(handled=True, reply=_session_info(session))
-
-        sub = parts[1].lower()
-
-        if sub == "list":
-            names = list_kbs(workspace)
-            if not names:
-                return CommandResult(handled=True, reply="Nessuna KB trovata.")
-            return CommandResult(handled=True, reply="Knowledge base disponibili:\n- " + "\n- ".join(names))
-
-        if sub == "use" and len(parts) >= 3:
-            kb_name = _set_session_kb(session, parts[2])
-            ensure_kb_dirs(workspace, kb_name)
-            return CommandResult(handled=True, reply=f"✅ KB attiva: {kb_name}")
-
-        if sub == "ingest" and len(parts) >= 3:
-            pdf_path = Path(" ".join(parts[2:])).expanduser().resolve()
-            if not pdf_path.exists() or not pdf_path.is_file():
-                return CommandResult(handled=True, reply=f"PDF non trovato: {pdf_path}")
-            kb_name = str(session.get_state().get("kb_name") or cfg.default_kb_name or "default").strip()
-            ensure_kb_dirs(workspace, kb_name)
-            copied = copy_source_file(workspace, kb_name, pdf_path)
-            result = _run_ingest_kb(cfg, workspace, kb_name, copied)
-            return CommandResult(
-                handled=True,
-                reply=json.dumps(_jsonable(result), ensure_ascii=False, indent=2),
-            )
-
-        return CommandResult(handled=True, reply="Uso: /kb | /kb list | /kb use <name> | /kb ingest <pdf_path>")
-
-    if cmd == "/route":
-        probe = text[len("/route"):].strip()
-        if not probe:
-            return CommandResult(handled=True, reply="Uso: /route <testo>")
-        decision = deterministic_route(
-            user_text=probe,
-            state_file=session.state_file,
-            default_language=cfg.default_language,
-        )
-        return CommandResult(
-            handled=True,
-            reply=json.dumps(_decision_to_jsonable(decision), ensure_ascii=False, indent=2),
-        )
-
-    if cmd == "/play":
-        raw_value = text[len("/play"):].strip()
-        return CommandResult(handled=True, reply=_play_audio(cfg, session, raw_value))
-
-    return CommandResult(handled=False)
+    return handler()
