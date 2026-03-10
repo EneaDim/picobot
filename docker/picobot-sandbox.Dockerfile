@@ -16,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     git \
     pkg-config \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m pip install --no-cache-dir --upgrade pip && \
@@ -25,6 +28,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip && \
 RUN git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git /tmp/whisper.cpp && \
     cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DWHISPER_FFMPEG=ON && \
     cmake --build /tmp/whisper.cpp/build -j"$(nproc)" --config Release && \
+    test -f /tmp/whisper.cpp/build/bin/whisper-cli && \
     cp /tmp/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli && \
     chmod +x /usr/local/bin/whisper-cli && \
     rm -rf /tmp/whisper.cpp

@@ -99,19 +99,28 @@ sandbox-up: sandbox-build
 	@if $(DOCKER) ps --format '{{.Names}}' | grep -Fxq "$(SANDBOX_NAME)"; then \
 		echo "[sandbox] container $(SANDBOX_NAME) already running"; \
 	elif $(DOCKER) ps -a --format '{{.Names}}' | grep -Fxq "$(SANDBOX_NAME)"; then \
-		echo "[sandbox] starting existing container $(SANDBOX_NAME)"; \
-		$(DOCKER) start "$(SANDBOX_NAME)" >/dev/null; \
+		echo "[sandbox] removing stale container $(SANDBOX_NAME) to refresh uid/gid mapping"; \
+		$(DOCKER) rm -f "$(SANDBOX_NAME)" >/dev/null; \
+		echo "[sandbox] creating container $(SANDBOX_NAME)"; \
+		$(DOCKER) run -d \
+			--name "$(SANDBOX_NAME)" \
+			--user "$$(id -u):$$(id -g)" \
+			-v "$(SANDBOX_WORKSPACE):$(SANDBOX_CONTAINER_WORKSPACE)" \
+			-w "$(SANDBOX_CONTAINER_WORKSPACE)" \
+			"$(SANDBOX_IMAGE)" \
+			sleep infinity >/dev/null; \
 	else \
 		echo "[sandbox] creating container $(SANDBOX_NAME)"; \
 		$(DOCKER) run -d \
 			--name "$(SANDBOX_NAME)" \
+			--user "$$(id -u):$$(id -g)" \
 			-v "$(SANDBOX_WORKSPACE):$(SANDBOX_CONTAINER_WORKSPACE)" \
 			-w "$(SANDBOX_CONTAINER_WORKSPACE)" \
 			"$(SANDBOX_IMAGE)" \
 			sleep infinity >/dev/null; \
 	fi
 	@echo "[sandbox] ready"
-	@$(DOCKER) exec -w / "$(SANDBOX_NAME)" mkdir -p "$(SANDBOX_CONTAINER_WORKSPACE)/sandbox_runs"
+	@mkdir -p "$(SANDBOX_WORKSPACE)/sandbox_runs"
 
 sandbox-down:
 	@if $(DOCKER) ps -a --format '{{.Names}}' | grep -Fxq "$(SANDBOX_NAME)"; then \
