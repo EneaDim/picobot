@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from picobot.router.documents import load_route_document, route_record_from_document
+from picobot.routing.documents import load_route_document, route_record_from_document
 
 
 def test_all_route_docs_have_required_fields():
-    root = Path("picobot/routing_kb/routes")
+    root = Path("picobot/knowledge/routing_kb/routes")
     assert root.exists()
 
     docs = sorted(root.glob("*.md"))

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 
-from picobot.router.schemas import RouteCandidate, RouteDecision, SessionRouteContext
+from picobot.routing.schemas import RouteCandidate, RouteDecision, SessionRouteContext
 from picobot.runtime_config import cfg_get
 
 _EXPLICIT_TOOL_RX = re.compile(

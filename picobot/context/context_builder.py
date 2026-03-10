@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from picobot.agent.prompts import system_base_context
+from picobot.prompts import system_base_context
 from picobot.config.schema import Config
 from picobot.context.model_context import ModelContext
 from picobot.memory.stores import MemoryRepository

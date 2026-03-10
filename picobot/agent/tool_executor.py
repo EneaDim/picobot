@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from picobot.agent.runtime_models import RuntimeHooks
+from picobot.agent.models import RuntimeHooks
 
 
 class ToolExecutor:

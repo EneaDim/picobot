@@ -4,8 +4,8 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
-from picobot.agent.runtime_models import RuntimeHooks, StatusCb, TurnResult
-from picobot.agent.prompts import kb_user_prompt
+from picobot.agent.models import RuntimeHooks, StatusCb, TurnResult
+from picobot.prompts import kb_user_prompt
 from picobot.providers.ollama import OllamaProviderError, OllamaTimeout
 from picobot.session.manager import Session
 from picobot.tools.base import ToolError
@@ -14,7 +14,7 @@ from picobot.tools.podcast import detect_podcast_request, generate_podcast
 from picobot.tools.youtube import YTSummaryArgs
 
 if TYPE_CHECKING:
-    from picobot.agent.orchestrator import Orchestrator
+    from picobot.agent.application import Orchestrator
 
 _YT_RX = re.compile(r"(https?://\S*(youtube\.com|youtu\.be)\S*)", re.IGNORECASE)
 

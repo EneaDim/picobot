@@ -449,3 +449,24 @@ __all__ = [
     "resolve_config_path",
     "tool_snapshot",
 ]
+
+def main() -> None:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Bootstrap local tools for picobot")
+    parser.add_argument("--config", default=".picobot/config.json", help="Path to config.json")
+    parser.add_argument("--overwrite", action="store_true", help="Redownload / reinstall assets")
+    parser.add_argument("--snapshot", action="store_true", help="Only print tool snapshot")
+    args = parser.parse_args()
+
+    if args.snapshot:
+        result = tool_snapshot(args.config)
+    else:
+        result = bootstrap_tools(args.config, overwrite=args.overwrite)
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

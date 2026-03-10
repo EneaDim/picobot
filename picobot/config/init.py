@@ -1,72 +1,58 @@
 from __future__ import annotations
 
-# Inizializzazione struttura locale .picobot/
-#
-# Obiettivi:
-# - copiare il template config in .picobot/config.json
-# - creare workspace coerente
-# - preparare le directory minime usate dal progetto
-import importlib.resources as ir
+import argparse
 import json
+import shutil
 from pathlib import Path
 
 
-def _read_template_text() -> str:
-    """
-    Legge il template config pacchettizzato.
-    """
-    with ir.files("picobot").joinpath("config/config.template.json").open("r", encoding="utf-8") as f:
-        return f.read()
+def _repo_root() -> Path:
+    return Path.cwd().resolve()
 
 
-def init_project(force: bool = False) -> dict:
-    """
-    Inizializza la struttura locale .picobot/.
+def init_project(*, force: bool = False) -> dict:
+    root = _repo_root()
+    picobot_dir = root / ".picobot"
+    picobot_dir.mkdir(parents=True, exist_ok=True)
 
-    Crea:
-    - .picobot/config.json
-    - .picobot/workspace/docs
-    - .picobot/workspace/memory
-    - .picobot/qdrant
-    """
-    root = Path.cwd() / ".picobot"
-    root.mkdir(parents=True, exist_ok=True)
+    template_path = root / "picobot" / "config" / "config.template.json"
+    config_path = picobot_dir / "config.json"
 
-    cfg_path = root / "config.json"
+    if not template_path.exists():
+        raise FileNotFoundError(f"Config template non trovato: {template_path}")
 
-    if cfg_path.exists() and not force:
-        return {
-            "status": "exists",
-            "root": str(root),
-            "config": str(cfg_path),
-        }
+    if config_path.exists() and not force:
+        created = False
+    else:
+        shutil.copyfile(template_path, config_path)
+        created = True
 
-    tmpl = _read_template_text()
+    workspace = picobot_dir / "workspace"
+    tools_dir = picobot_dir / "tools"
+    workspace.mkdir(parents=True, exist_ok=True)
+    tools_dir.mkdir(parents=True, exist_ok=True)
 
-    # Validiamo il JSON del template prima di scriverlo.
-    data = json.loads(tmpl)
-    cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    workspace = root / "workspace"
-    docs_dir = workspace / "docs"
-    memory_dir = workspace / "memory"
-    sessions_dir = memory_dir / "sessions"
-    qdrant_dir = root / "qdrant"
-
-    docs_dir.mkdir(parents=True, exist_ok=True)
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    qdrant_dir.mkdir(parents=True, exist_ok=True)
-
-    global_memory = memory_dir / "MEMORY.md"
-    if not global_memory.exists():
-        global_memory.write_text("# Memory\n\n", encoding="utf-8")
+    outputs = root / "outputs" / "podcasts"
+    outputs.mkdir(parents=True, exist_ok=True)
 
     return {
-        "status": "created",
-        "root": str(root),
-        "config": str(cfg_path),
-        "workspace": str(workspace),
-        "docs": str(docs_dir),
-        "memory": str(global_memory),
-        "qdrant": str(qdrant_dir),
+        "ok": True,
+        "config_path": str(config_path),
+        "config_created": created,
+        "workspace_dir": str(workspace),
+        "tools_dir": str(tools_dir),
+        "outputs_dir": str(outputs),
     }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Initialize local picobot project files")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing .picobot/config.json")
+    args = parser.parse_args()
+
+    result = init_project(force=args.force)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

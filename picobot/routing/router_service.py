@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 
-from picobot.router.router_index import load_router_records
-from picobot.router.router_policy import RouterPolicy
-from picobot.router.router_retriever import RouterRetriever
-from picobot.router.schemas import RouteDecision, SessionRouteContext
+from picobot.routing.router_index import load_router_records
+from picobot.routing.router_policy import RouterPolicy
+from picobot.routing.router_retriever import RouterRetriever
+from picobot.routing.schemas import RouteDecision, SessionRouteContext
 
 logger = logging.getLogger(__name__)
 

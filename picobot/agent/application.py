@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from picobot.agent.memory_context_service import MemoryContextService
-from picobot.agent.prompts import detect_language, system_base_context
+from picobot.prompts import detect_language, system_base_context
 from picobot.agent.route_selection import RouteSelectionService
-from picobot.agent.runtime_models import HookCb, RuntimeHooks, StatusCb, TurnResult
+from picobot.agent.models import HookCb, RuntimeHooks, StatusCb, TurnResult
 from picobot.agent.tool_executor import ToolExecutor
 from picobot.agent.turn_processor import TurnProcessor
 from picobot.agent.workflow_dispatcher import WorkflowDispatcher

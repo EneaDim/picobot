@@ -275,3 +275,57 @@ def runtime_event(
         payload=payload or {},
         metadata=metadata or {},
     )
+
+
+def inbound_voice_note(
+    *,
+    channel: str,
+    chat_id: str,
+    session_id: str,
+    audio_path: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    metadata: dict | None = None,
+) -> InboundMessage:
+    return InboundMessage(
+        message_type="inbound.telegram.voice_note",
+        source=channel,
+        channel=channel,
+        chat_id=chat_id,
+        session_id=session_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        payload={
+            "audio_path": audio_path,
+        },
+        metadata=metadata or {},
+    )
+
+
+def inbound_document(
+    *,
+    channel: str,
+    chat_id: str,
+    session_id: str,
+    file_path: str,
+    file_name: str | None = None,
+    mime_type: str | None = None,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    metadata: dict | None = None,
+) -> InboundMessage:
+    return InboundMessage(
+        message_type="inbound.telegram.document",
+        source=channel,
+        channel=channel,
+        chat_id=chat_id,
+        session_id=session_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        payload={
+            "file_path": file_path,
+            "file_name": file_name or "",
+            "mime_type": mime_type or "",
+        },
+        metadata=metadata or {},
+    )

@@ -29,7 +29,7 @@ dev = [
 ]
 
 [project.scripts]
-picobot = "picobot.cli.app:main"
+picobot = "picobot.app.main:main"
 
 [tool.setuptools]
 include-package-data = true
@@ -41,7 +41,7 @@ exclude = ["outputs*"]
 
 [tool.setuptools.package-data]
 picobot = [
-  "routing_kb/routes/*.md",
+  "knowledge/routing_kb/routes/*.md",
   "config/*.json",
   "config/*.yml"
 ]

@@ -1,6 +1,5 @@
-from __future__ import annotations
+from picobot.app.main import main
 
-from picobot.cli.app import main
 
 if __name__ == "__main__":
     main()

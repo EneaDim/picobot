@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from picobot.agent.prompts import tool_protocol_system
+from picobot.prompts import tool_protocol_system
 from picobot.providers.types import ChatResponse, ToolCall
 
 

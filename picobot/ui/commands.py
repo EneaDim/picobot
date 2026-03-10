@@ -8,7 +8,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from picobot.agent.router import deterministic_route
+from picobot.routing.deterministic import deterministic_route
 from picobot.config.schema import Config
 from picobot.memory.stores import MemoryRepository
 from picobot.retrieval.ingest import ingest_kb

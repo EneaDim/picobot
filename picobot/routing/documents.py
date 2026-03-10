@@ -3,7 +3,7 @@ from __future__ import annotations
 # Parser robusto dei route documents markdown.
 #
 # Source of truth:
-# - picobot/routing_kb/routes/*.md
+# - picobot/knowledge/routing_kb/routes/*.md
 #
 # Formato atteso:
 #
@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from picobot.router.schemas import RouteRecord
+from picobot.routing.schemas import RouteRecord
 
 
 @dataclass(frozen=True)

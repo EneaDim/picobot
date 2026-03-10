@@ -1,4 +1,4 @@
-from picobot.agent.prompts import (
+from picobot.prompts import (
     detect_language,
     kb_user_prompt,
     system_base_context,

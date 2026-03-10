@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
-from picobot.agent.prompts import detect_language
+from picobot.prompts import detect_language
 from picobot.runtime_config import cfg_get
 from picobot.tools.base import ToolSpec, tool_error, tool_ok
 from picobot.tools.terminal_tool import TerminalToolBase

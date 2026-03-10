@@ -15,7 +15,7 @@ from __future__ import annotations
 # - tool
 #
 # Il record di base è RouteRecord, che nasce dai file markdown
-# presenti in picobot/routing_kb/routes/.
+# presenti in picobot/knowledge/routing_kb/routes/.
 from dataclasses import dataclass, field
 from typing import Any, Literal
 

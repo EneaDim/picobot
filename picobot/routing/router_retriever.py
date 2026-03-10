@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-from picobot.router.schemas import RouteCandidate, RouteRecord
+from picobot.routing.schemas import RouteCandidate, RouteRecord
 
 logger = logging.getLogger(__name__)
 

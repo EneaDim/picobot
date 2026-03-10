@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from picobot.agent.prompts import detect_language
-from picobot.agent.router import deterministic_route
+from picobot.prompts import detect_language
+from picobot.routing.deterministic import deterministic_route
 from picobot.session.manager import Session
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 # Questo file gestisce il caricamento del corpus router dal filesystem.
 #
 # Source of truth:
-# - picobot/routing_kb/routes/*.md
+# - picobot/knowledge/routing_kb/routes/*.md
 #
 # Qui NON c'è logica di scoring.
 # Qui facciamo solo:
@@ -13,15 +13,15 @@ from __future__ import annotations
 # - ordinamento stabile
 from pathlib import Path
 
-from picobot.router.documents import load_route_document, route_record_from_document
-from picobot.router.schemas import RouteRecord
+from picobot.routing.documents import load_route_document, route_record_from_document
+from picobot.routing.schemas import RouteRecord
 
 
 def router_docs_dir() -> Path:
     """
     Restituisce la directory dei documenti di routing.
     """
-    return (Path(__file__).resolve().parent.parent / "routing_kb" / "routes").resolve()
+    return (Path(__file__).resolve().parent.parent / "knowledge" / "routing_kb" / "routes").resolve()
 
 
 def route_doc_paths() -> list[Path]:

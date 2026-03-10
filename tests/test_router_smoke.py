@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from picobot.agent.router import deterministic_route
+from picobot.routing.deterministic import deterministic_route
 
 
 def test_router_smoke(tmp_path: Path):

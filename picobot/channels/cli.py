@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from picobot.bus.events import BusMessage, InboundMessage, OutboundMessage, inbound_text
+from picobot.bus.queue import MessageBus
+from picobot.channels.base import Channel
+
+
+class CLIChannel(Channel):
+    """
+    Channel adapter per la CLI.
+
+    Responsabilità:
+    - pubblicare inbound.text sul bus
+    - ricevere outbound.* dal ChannelManager
+    - rendere disponibili i messaggi in uscita al loop CLI
+    """
+
+    def __init__(self, *, bus: MessageBus, session_id: str = "default") -> None:
+        super().__init__(name="cli", bus=bus)
+        self.default_session_id = (session_id or "default").strip() or "default"
+        self.outbound_queue: asyncio.Queue[OutboundMessage] = asyncio.Queue()
+
+    async def start(self) -> None:
+        return
+
+    async def stop(self) -> None:
+        return
+
+    async def send_text(
+        self,
+        *,
+        text: str,
+        session_id: str | None = None,
+        correlation_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        message = inbound_text(
+            channel=self.name,
+            chat_id="cli",
+            session_id=(session_id or self.default_session_id),
+            text=text,
+            correlation_id=correlation_id,
+            metadata=metadata or {},
+        )
+        await self.bus.publish(message)
+        return message.correlation_id
+
+    async def handle_outbound(self, message: OutboundMessage) -> None:
+        await self.outbound_queue.put(message)
+
+    async def recv_for_correlation(
+        self,
+        correlation_id: str,
+        *,
+        stop_on_final_text: bool = True,
+    ) -> list[OutboundMessage]:
+        """
+        Raccoglie i messaggi outbound relativi a una correlation_id.
+
+        Restituisce tutti i messaggi raccolti fino al primo outbound.text
+        o outbound.error finale.
+        """
+        collected: list[OutboundMessage] = []
+
+        while True:
+            msg = await self.outbound_queue.get()
+            if not isinstance(msg, OutboundMessage):
+                continue
+            if msg.correlation_id != correlation_id:
+                continue
+
+            collected.append(msg)
+
+            if msg.message_type == "outbound.error":
+                break
+
+            if stop_on_final_text and msg.message_type == "outbound.text":
+                break
+
+        return collected

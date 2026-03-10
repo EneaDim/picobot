@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from picobot.agent.runtime_models import RuntimeHooks
+from picobot.agent.models import RuntimeHooks
 from picobot.bus.events import InboundMessage, outbound_audio, outbound_error, outbound_status, outbound_text, runtime_event
 from picobot.bus.queue import MessageBus
 from picobot.session.manager import Session

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from picobot.agent.memory import make_memory_manager
+from picobot.memory.manager import make_memory_manager
 from picobot.context import ContextAssembly
 from picobot.session.manager import Session
 

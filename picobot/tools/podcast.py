@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from picobot.agent.prompts import detect_language, system_base_context
+from picobot.prompts import detect_language, system_base_context
 from picobot.tools.tts import synthesize_speech
 
 StatusCb = Callable[[str], Awaitable[None]]

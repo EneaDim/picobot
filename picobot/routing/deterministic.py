@@ -4,9 +4,9 @@ import atexit
 import json
 from pathlib import Path
 
-from picobot.agent.prompts import detect_language
-from picobot.router.router_service import RouterService
-from picobot.router.schemas import RouteDecision, SessionRouteContext
+from picobot.prompts import detect_language
+from picobot.routing.router_service import RouterService
+from picobot.routing.schemas import RouteDecision, SessionRouteContext
 
 _router: RouterService | None = None
 

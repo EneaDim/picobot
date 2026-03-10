@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from picobot.agent.orchestrator import Orchestrator
+from picobot.agent.application import Orchestrator
 from picobot.config.schema import Config
 from picobot.providers.types import ChatResponse
 from picobot.session.manager import SessionManager
