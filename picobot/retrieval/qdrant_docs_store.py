@@ -3,9 +3,18 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from qdrant_client import QdrantClient, models
-
 from picobot.runtime_config import cfg_get
+
+try:
+    from qdrant_client import QdrantClient, models
+
+    QDRANT_AVAILABLE = True
+    QDRANT_IMPORT_ERROR: Exception | None = None
+except Exception as e:  # pragma: no cover - dipende dall'ambiente
+    QdrantClient = None  # type: ignore[assignment]
+    models = None  # type: ignore[assignment]
+    QDRANT_AVAILABLE = False
+    QDRANT_IMPORT_ERROR = e
 
 
 def stable_uuid(value: str) -> str:
@@ -16,18 +25,25 @@ class DocsQdrantStore:
     def __init__(self) -> None:
         self.path = str(cfg_get("qdrant.path", ".picobot/qdrant"))
         self.collection = str(cfg_get("qdrant.docs_collection", "docs_index"))
-        self.client = QdrantClient(path=self.path)
+        self.enabled = QDRANT_AVAILABLE
+        self.client = QdrantClient(path=self.path) if QDRANT_AVAILABLE else None
 
     def close(self) -> None:
         """
         Chiusura esplicita del client Qdrant embedded.
         """
+        if not self.client:
+            return
+
         try:
             self.client.close()
         except Exception:
             pass
 
     def ensure_collection(self, vector_size: int) -> None:
+        if not self.client or not models:
+            return
+
         vector_size = int(vector_size)
 
         try:
@@ -63,6 +79,9 @@ class DocsQdrantStore:
             )
 
     def delete_kb(self, kb_name: str) -> None:
+        if not self.client or not models:
+            return
+
         kb_name = str(kb_name or "").strip()
         if not kb_name:
             return
@@ -86,6 +105,9 @@ class DocsQdrantStore:
             pass
 
     def upsert(self, points: list[dict[str, Any]]) -> int:
+        if not self.client or not models:
+            return 0
+
         if not points:
             return 0
 
@@ -134,6 +156,9 @@ class DocsQdrantStore:
         kb_name: str,
         top_k: int = 8,
     ) -> list[Any]:
+        if not self.client or not models:
+            return []
+
         limit = max(1, int(top_k))
 
         query_filter = models.Filter(

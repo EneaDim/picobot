@@ -2,20 +2,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Callable
 
 from picobot.agent.orchestrator import Orchestrator
-from picobot.bus.events import (
-    BusMessage,
-    InboundMessage,
-    outbound_audio,
-    outbound_error,
-    outbound_status,
-    outbound_text,
-    runtime_event,
-)
+from picobot.bus.events import BusMessage, InboundMessage
 from picobot.bus.queue import MessageBus
 from picobot.config.schema import Config
 from picobot.providers.ollama import OllamaProvider
+from picobot.runtime.event_publisher import RuntimeEventPublisher
 from picobot.session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -23,7 +17,13 @@ logger = logging.getLogger(__name__)
 
 class AgentRuntime:
     """
-    Primo runtime event-driven del progetto.
+    Runtime event-driven del progetto.
+
+    In questa fase:
+    - consuma inbound.text
+    - pubblica outbound.*
+    - pubblica runtime events granulari durante il turn
+    - gestisce heartbeat come snapshot runtime minimale
     """
 
     def __init__(
@@ -42,8 +42,9 @@ class AgentRuntime:
         self.workspace = Path(workspace).expanduser().resolve()
         self.sessions = session_manager or SessionManager(self.workspace)
         self.orchestrator = orchestrator or Orchestrator(cfg, provider, self.workspace)
+        self.events = RuntimeEventPublisher(bus=bus)
 
-        self._unsubscribe_callbacks: list[callable] = []
+        self._unsubscribe_callbacks: list[Callable[[], None]] = []
         self._started = False
 
     async def start(self) -> None:
@@ -57,7 +58,7 @@ class AgentRuntime:
             self.bus.subscribe("inbound.cron_tick", self._on_inbound_not_implemented)
         )
         self._unsubscribe_callbacks.append(
-            self.bus.subscribe("inbound.heartbeat_tick", self._on_inbound_not_implemented)
+            self.bus.subscribe("inbound.heartbeat_tick", self._on_heartbeat_tick)
         )
 
         self._started = True
@@ -75,19 +76,21 @@ class AgentRuntime:
         if not isinstance(message, InboundMessage):
             return
 
-        await self.bus.publish(
-            runtime_event(
-                event_type="runtime.inbound_ignored",
-                channel=message.channel,
-                chat_id=message.chat_id,
-                session_id=message.session_id,
-                correlation_id=message.correlation_id,
-                causation_id=message.message_id,
-                payload={
-                    "reason": "not_implemented_yet",
-                    "message_type": message.message_type,
-                },
-            )
+        await self.events.publish_inbound_ignored(
+            inbound=message,
+            reason="not_implemented_yet",
+        )
+
+    async def _on_heartbeat_tick(self, message: BusMessage) -> None:
+        if not isinstance(message, InboundMessage):
+            return
+
+        await self.events.publish_heartbeat_snapshot(
+            inbound=message,
+            runtime_started=self._started,
+            workspace=str(self.workspace),
+            session_manager_name=self.sessions.__class__.__name__,
+            orchestrator_name=self.orchestrator.__class__.__name__,
         )
 
     async def _on_inbound_text(self, message: BusMessage) -> None:
@@ -99,135 +102,61 @@ class AgentRuntime:
         user_text = str(message.payload.get("text") or "").strip()
 
         if not user_text:
-            await self.bus.publish(
-                outbound_error(
-                    channel=message.channel,
-                    chat_id=message.chat_id,
-                    session_id=session.session_id,
-                    text="Messaggio vuoto.",
-                    correlation_id=message.correlation_id,
-                    causation_id=message.message_id,
-                )
+            await self.events.publish_empty_input_error(
+                inbound=message,
+                session=session,
             )
             return
 
-        await self.bus.publish(
-            runtime_event(
-                event_type="runtime.turn_started",
-                channel=message.channel,
-                chat_id=message.chat_id,
-                session_id=session.session_id,
-                correlation_id=message.correlation_id,
-                causation_id=message.message_id,
-                payload={
-                    "input_type": message.message_type,
-                    "text_len": len(user_text),
-                },
-            )
+        await self.events.publish_turn_started(
+            inbound=message,
+            session=session,
+            user_text=user_text,
         )
 
         async def status_cb(text: str) -> None:
-            await self.bus.publish(
-                outbound_status(
-                    channel=message.channel,
-                    chat_id=message.chat_id,
-                    session_id=session.session_id,
-                    text=text,
-                    correlation_id=message.correlation_id,
-                    causation_id=message.message_id,
-                )
+            await self.events.publish_status(
+                inbound=message,
+                session=session,
+                text=text,
             )
+
+        hooks = self.events.make_turn_hooks(
+            inbound=message,
+            session_id=session.session_id,
+        )
 
         try:
             result = await self.orchestrator.one_turn(
                 session=session,
                 user_text=user_text,
                 status=status_cb,
+                hooks=hooks,
             )
         except Exception as exc:
             logger.exception("Runtime turn failed for session=%s", session.session_id)
 
-            await self.bus.publish(
-                runtime_event(
-                    event_type="runtime.turn_failed",
-                    channel=message.channel,
-                    chat_id=message.chat_id,
-                    session_id=session.session_id,
-                    correlation_id=message.correlation_id,
-                    causation_id=message.message_id,
-                    payload={"error": str(exc)},
-                )
+            await self.events.publish_turn_failed(
+                inbound=message,
+                session=session,
+                error=exc,
             )
 
-            await self.bus.publish(
-                outbound_error(
-                    channel=message.channel,
-                    chat_id=message.chat_id,
-                    session_id=session.session_id,
-                    text=f"Errore runtime: {exc}",
-                    correlation_id=message.correlation_id,
-                    causation_id=message.message_id,
-                )
+            await self.events.publish_error(
+                inbound=message,
+                session=session,
+                text=f"Errore runtime: {exc}",
             )
             return
 
-        await self.bus.publish(
-            runtime_event(
-                event_type="runtime.turn_completed",
-                channel=message.channel,
-                chat_id=message.chat_id,
-                session_id=session.session_id,
-                correlation_id=message.correlation_id,
-                causation_id=message.message_id,
-                payload={
-                    "action": result.action,
-                    "reason": result.reason,
-                    "score": result.score,
-                    "retrieval_hits": result.retrieval_hits,
-                    "has_audio": bool(result.audio_path),
-                    "route_name": result.route_name,
-                    "route_action": result.route_action,
-                    "route_reason": result.route_reason,
-                    "route_score": result.route_score,
-                    "route_candidates": result.route_candidates or [],
-                },
-            )
+        await self.events.publish_turn_completed(
+            inbound=message,
+            session=session,
+            result=result,
         )
 
-        common_meta = {
-            "action": result.action,
-            "reason": result.reason,
-            "score": result.score,
-            "retrieval_hits": result.retrieval_hits,
-            "route_name": result.route_name,
-            "route_action": result.route_action,
-            "route_reason": result.route_reason,
-            "route_score": result.route_score,
-            "route_candidates": result.route_candidates or [],
-        }
-
-        if result.audio_path:
-            await self.bus.publish(
-                outbound_audio(
-                    channel=message.channel,
-                    chat_id=message.chat_id,
-                    session_id=session.session_id,
-                    audio_path=result.audio_path,
-                    caption="Audio generato",
-                    correlation_id=message.correlation_id,
-                    causation_id=message.message_id,
-                    metadata=common_meta,
-                )
-            )
-
-        await self.bus.publish(
-            outbound_text(
-                channel=message.channel,
-                chat_id=message.chat_id,
-                session_id=session.session_id,
-                text=result.content,
-                correlation_id=message.correlation_id,
-                causation_id=message.message_id,
-                metadata=common_meta,
-            )
+        await self.events.publish_turn_outputs(
+            inbound=message,
+            session=session,
+            result=result,
         )

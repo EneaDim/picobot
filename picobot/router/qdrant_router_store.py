@@ -3,9 +3,18 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from qdrant_client import QdrantClient, models
-
 from picobot.runtime_config import cfg_get
+
+try:
+    from qdrant_client import QdrantClient, models
+
+    QDRANT_AVAILABLE = True
+    QDRANT_IMPORT_ERROR: Exception | None = None
+except Exception as e:  # pragma: no cover - dipende dall'ambiente
+    QdrantClient = None  # type: ignore[assignment]
+    models = None  # type: ignore[assignment]
+    QDRANT_AVAILABLE = False
+    QDRANT_IMPORT_ERROR = e
 
 
 def stable_uuid(value: str) -> str:
@@ -16,18 +25,25 @@ class RouterQdrantStore:
     def __init__(self) -> None:
         self.path = str(cfg_get("qdrant.path", ".picobot/qdrant"))
         self.collection = str(cfg_get("qdrant.router_collection", "router_index"))
-        self.client = QdrantClient(path=self.path)
+        self.enabled = QDRANT_AVAILABLE
+        self.client = QdrantClient(path=self.path) if QDRANT_AVAILABLE else None
 
     def close(self) -> None:
         """
         Chiusura esplicita del client Qdrant embedded.
         """
+        if not self.client:
+            return
+
         try:
             self.client.close()
         except Exception:
             pass
 
     def recreate_collection(self, vector_size: int) -> None:
+        if not self.client or not models:
+            return
+
         try:
             if self.client.collection_exists(self.collection):
                 self.client.delete_collection(self.collection)
@@ -43,6 +59,9 @@ class RouterQdrantStore:
         )
 
     def count(self) -> int:
+        if not self.client:
+            return 0
+
         try:
             res = self.client.count(collection_name=self.collection, exact=True)
             return int(getattr(res, "count", 0) or 0)
@@ -50,6 +69,9 @@ class RouterQdrantStore:
             return 0
 
     def upsert(self, points: list[dict[str, Any]]) -> int:
+        if not self.client or not models:
+            return 0
+
         if not points:
             return 0
 
@@ -92,6 +114,9 @@ class RouterQdrantStore:
         return []
 
     def search(self, *, vector: list[float], top_k: int = 8) -> list[Any]:
+        if not self.client:
+            return []
+
         limit = max(1, int(top_k))
 
         if hasattr(self.client, "query_points"):

@@ -114,7 +114,14 @@ def _make_executable(path: Path) -> None:
 
 def _safe_extract_tar(archive_path: Path, target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
+    target_root = target_dir.resolve()
+
     with tarfile.open(archive_path, "r:gz") as tf:
+        for member in tf.getmembers():
+            member_target = (target_dir / member.name).resolve()
+            if member_target != target_root and target_root not in member_target.parents:
+                raise RuntimeError(f"Tar archive contains unsafe path: {member.name}")
+
         tf.extractall(target_dir)
 
 
@@ -141,14 +148,6 @@ def _check_piper_bundle(bundle_root: Path) -> dict[str, Any]:
 
 
 def _find_extracted_piper_root(extract_root: Path) -> Path:
-    """
-    Trova la root reale del bundle estratto.
-    Nel layout osservato:
-      _extract/piper/piper
-      _extract/piper/libpiper_phonemize.so...
-      _extract/piper/espeak-ng-data/...
-    quindi la root reale è _extract/piper
-    """
     direct = extract_root / "piper"
     if direct.exists() and direct.is_dir():
         return direct
@@ -161,21 +160,6 @@ def _find_extracted_piper_root(extract_root: Path) -> Path:
 
 
 def _install_piper_bundle_from_extracted(extracted_root: Path, piper_root: Path) -> dict[str, Any]:
-    """
-    Layout reale osservato:
-      extracted_root/piper
-      extracted_root/piper_phonemize
-      extracted_root/lib*.so*
-      extracted_root/*.ort
-      extracted_root/espeak-ng-data/
-
-    Installazione target:
-      piper_root/bin/piper
-      piper_root/bin/piper_phonemize
-      piper_root/lib/*.so*
-      piper_root/lib/*.ort
-      piper_root/espeak-ng-data/
-    """
     bin_dir = piper_root / "bin"
     lib_dir = piper_root / "lib"
     espeak_dir = piper_root / "espeak-ng-data"
@@ -288,11 +272,10 @@ def _download_piper_models(repo_root: Path, cfg: dict[str, Any], overwrite: bool
     piper_it = _resolve_repo_path(repo_root, models.get("piper_it"), ".picobot/tools/piper/models/it_IT-paola-medium.onnx")
     piper_en = _resolve_repo_path(repo_root, models.get("piper_en"), ".picobot/tools/piper/models/en_US-lessac-medium.onnx")
 
-    out = {
+    return {
         "it": _download_voice_pair(piper_it.parent, "it_IT-paola-medium", overwrite=overwrite),
         "en": _download_voice_pair(piper_en.parent, "en_US-lessac-medium", overwrite=overwrite),
     }
-    return out
 
 
 def _download_ytdlp(repo_root: Path, cfg: dict[str, Any], overwrite: bool) -> dict[str, Any]:
@@ -320,67 +303,149 @@ def _download_ytdlp(repo_root: Path, cfg: dict[str, Any], overwrite: bool) -> di
     }
 
 
-def bootstrap_all(config_path: str | None = None, overwrite: bool = False) -> dict[str, Any]:
-    cfg_path = resolve_config_path(config_path)
-    repo_root = _repo_root_from_config(cfg_path)
-    cfg = _load_json(cfg_path)
-
-    result: dict[str, Any] = {
-        "config_path": str(cfg_path),
-        "repo_root": str(repo_root),
-        "overwrite": bool(overwrite),
-        "tools": {},
-    }
-
-    result["tools"]["yt_dlp"] = _download_ytdlp(repo_root, cfg, overwrite=overwrite)
-    result["tools"]["piper_bundle"] = _download_piper_bundle(repo_root, cfg, overwrite=overwrite)
-    result["tools"]["piper_models"] = _download_piper_models(repo_root, cfg, overwrite=overwrite)
-
-    return result
-
-
-def tool_snapshot(config_path: str | None = None) -> dict[str, Any]:
-    cfg_path = resolve_config_path(config_path)
-    repo_root = _repo_root_from_config(cfg_path)
-    cfg = _load_json(cfg_path)
+def init_tool_dirs(cfg_path: str | Path | None = None) -> dict[str, Any]:
+    """
+    API usata dai test: inizializza la struttura directory dei tool
+    a partire dalla config, senza forzare download.
+    """
+    resolved_cfg = resolve_config_path(str(cfg_path) if cfg_path is not None else None)
+    cfg = _load_json(resolved_cfg)
+    repo_root = _repo_root_from_config(resolved_cfg)
 
     tools_base = _resolve_repo_path(repo_root, _get_in(cfg, "tools.base_dir"), ".picobot/tools")
-    ytdlp_path = _resolve_repo_path(repo_root, _get_in(cfg, "tools.bins.ytdlp"), ".picobot/tools/yt-dlp/bin/yt-dlp")
-    piper_path = _resolve_repo_path(repo_root, _get_in(cfg, "tools.bins.piper"), ".picobot/tools/piper/bin/piper")
+    tools_base.mkdir(parents=True, exist_ok=True)
 
-    piper_root = tools_base / "piper"
+    bins = _get_in(cfg, "tools.bins", {}) or {}
     models = _get_in(cfg, "tools.models", {}) or {}
-    piper_it = _resolve_repo_path(repo_root, models.get("piper_it"), ".picobot/tools/piper/models/it_IT-paola-medium.onnx")
-    piper_en = _resolve_repo_path(repo_root, models.get("piper_en"), ".picobot/tools/piper/models/en_US-lessac-medium.onnx")
 
-    piper_info = _check_piper_bundle(piper_root)
+    created: list[str] = [str(tools_base)]
+
+    for value in bins.values():
+        if not value or not isinstance(value, str):
+            continue
+
+        raw = Path(value).expanduser()
+        if raw.is_absolute():
+            p = raw.resolve()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            created.append(str(p.parent))
+
+    for value in models.values():
+        if not value or not isinstance(value, str):
+            continue
+
+        raw = Path(value).expanduser()
+        if raw.is_absolute():
+            p = raw.resolve()
+        else:
+            p = _resolve_repo_path(repo_root, value)
+
+        p.parent.mkdir(parents=True, exist_ok=True)
+        created.append(str(p.parent))
 
     return {
+        "ok": True,
+        "config_path": str(resolved_cfg),
+        "repo_root": str(repo_root),
+        "tools_root": str(tools_base),
+        "tools_base_dir": str(tools_base),
+        "created_dirs": sorted(set(created)),
+    }
+
+
+def tool_snapshot(cfg_path: str | Path | None = None) -> dict[str, Any]:
+    resolved_cfg = resolve_config_path(str(cfg_path) if cfg_path is not None else None)
+    cfg = _load_json(resolved_cfg)
+    repo_root = _repo_root_from_config(resolved_cfg)
+
+    tools_base = _resolve_repo_path(repo_root, _get_in(cfg, "tools.base_dir"), ".picobot/tools")
+    bins = _get_in(cfg, "tools.bins", {}) or {}
+    models = _get_in(cfg, "tools.models", {}) or {}
+
+    resolved_bins: dict[str, Any] = {}
+    for key, value in bins.items():
+        if not value or not isinstance(value, str):
+            continue
+
+        raw = Path(value).expanduser()
+        if raw.is_absolute():
+            path = raw.resolve()
+            managed = False
+        else:
+            path = _resolve_repo_path(repo_root, value)
+            managed = True
+
+        resolved_bins[key] = {
+            "path": str(path),
+            "exists": path.exists(),
+            "managed": managed,
+            "executable": os.access(path, os.X_OK) if path.exists() else False,
+        }
+
+    resolved_models: dict[str, Any] = {}
+    for key, value in models.items():
+        if not value or not isinstance(value, str):
+            continue
+
+        raw = Path(value).expanduser()
+        if raw.is_absolute():
+            path = raw.resolve()
+        else:
+            path = _resolve_repo_path(repo_root, value)
+
+        resolved_models[key] = {
+            "path": str(path),
+            "exists": path.exists(),
+        }
+
+    return {
+        "config_path": str(resolved_cfg),
+        "repo_root": str(repo_root),
+        "tools_root": str(tools_base),
+        "tools_base_dir": str(tools_base),
+        "bins": resolved_bins,
+        "models": resolved_models,
+    }
+
+
+def bootstrap_tools(
+    config_path: str | None = None,
+    *,
+    overwrite: bool = False,
+    include_ytdlp: bool = True,
+    include_piper_bundle: bool = True,
+    include_piper_models: bool = True,
+) -> dict[str, Any]:
+    cfg_path = resolve_config_path(config_path)
+    cfg = _load_json(cfg_path)
+    repo_root = _repo_root_from_config(cfg_path)
+
+    report: dict[str, Any] = {
         "config_path": str(cfg_path),
         "repo_root": str(repo_root),
-        "yt_dlp": {
-            "path": str(ytdlp_path),
-            "exists": Path(ytdlp_path).exists(),
-            "executable": os.access(ytdlp_path, os.X_OK) if Path(ytdlp_path).exists() else False,
-            "node_path": shutil.which("node") or "/usr/bin/node",
-            "node_exists": Path(shutil.which("node") or "/usr/bin/node").exists(),
+        "platform": {
+            "system": platform.system(),
+            "machine": platform.machine(),
         },
-        "piper": {
-            "path": str(piper_path),
-            "exists": Path(piper_path).exists(),
-            "executable": os.access(piper_path, os.X_OK) if Path(piper_path).exists() else False,
-            "bundle": piper_info,
-            "models": {
-                "it": {
-                    "path": str(piper_it),
-                    "exists": Path(piper_it).exists(),
-                    "json_exists": Path(str(piper_it) + ".json").exists(),
-                },
-                "en": {
-                    "path": str(piper_en),
-                    "exists": Path(piper_en).exists(),
-                    "json_exists": Path(str(piper_en) + ".json").exists(),
-                },
-            },
-        },
+        "steps": {},
     }
+
+    if include_ytdlp:
+        report["steps"]["yt_dlp"] = _download_ytdlp(repo_root, cfg, overwrite=overwrite)
+
+    if include_piper_bundle:
+        report["steps"]["piper_bundle"] = _download_piper_bundle(repo_root, cfg, overwrite=overwrite)
+
+    if include_piper_models:
+        report["steps"]["piper_models"] = _download_piper_models(repo_root, cfg, overwrite=overwrite)
+
+    report["snapshot"] = tool_snapshot(cfg_path)
+    return report
+
+
+__all__ = [
+    "bootstrap_tools",
+    "init_tool_dirs",
+    "resolve_config_path",
+    "tool_snapshot",
+]

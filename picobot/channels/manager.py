@@ -52,7 +52,6 @@ class ChannelManager:
             return
 
         channel_name = message.channel
-
         channel = self.channels.get(channel_name)
 
         if not channel:
@@ -60,7 +59,6 @@ class ChannelManager:
             return
 
         try:
-            await channel.publish(message)
-
+            await channel.handle_outbound(message)
         except Exception:
-            logger.exception("Channel publish failed")
+            logger.exception("Channel outbound delivery failed")

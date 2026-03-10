@@ -1,4 +1,4 @@
-from picobot.context.context_builder import ContextBuilder
+from picobot.context.context_builder import ContextAssembly, ContextBuilder
 from picobot.context.model_context import ModelContext
 
-__all__ = ["ContextBuilder", "ModelContext"]
+__all__ = ["ContextAssembly", "ContextBuilder", "ModelContext"]
