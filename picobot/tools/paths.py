@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,54 @@ def get_tool_bin(cfg: Any, key: str, default: str = "") -> str:
     return resolve_repo_path(raw)
 
 
+def _detect_docker_backend(cfg: Any) -> bool:
+    """
+    Rilevazione robusta e pragmatica del backend docker.
+
+    Ordine:
+    1. sandbox.runtime.backend == "docker"
+    2. sandbox.runtime.docker.enabled == True
+    3. fallback su config raw da .picobot/config.json
+    """
+    backend = str(_get_attr_path(cfg, "sandbox.runtime.backend", "") or "").strip().lower()
+    if backend == "docker":
+        return True
+
+    docker_enabled = _get_attr_path(cfg, "sandbox.runtime.docker.enabled", None)
+    if docker_enabled is True:
+        return True
+
+    # fallback robusto sul file raw
+    try:
+        import json
+        raw_cfg = json.loads((repo_root() / ".picobot" / "config.json").read_text(encoding="utf-8"))
+        raw_backend = str(
+            (((raw_cfg.get("sandbox") or {}).get("runtime") or {}).get("backend") or "")
+        ).strip().lower()
+        if raw_backend == "docker":
+            return True
+
+        raw_docker_enabled = (
+            (((raw_cfg.get("sandbox") or {}).get("runtime") or {}).get("docker") or {}).get("enabled")
+        )
+        if raw_docker_enabled is True:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def get_runtime_tool_bin(cfg: Any, key: str, fallback: str) -> str:
+    """
+    - backend docker -> usa il binario sul PATH del container
+    - backend host   -> usa il path/tool locale risolto da config
+    """
+    if _detect_docker_backend(cfg):
+        return fallback
+    return get_tool_bin(cfg, key, fallback)
+
+
 def get_tool_model(cfg: Any, key: str, default: str = "") -> str:
     value = _get_attr_path(cfg, f"tools.models.{key}", None)
     raw = str(value or default or "").strip()
@@ -66,14 +115,6 @@ def get_tool_model(cfg: Any, key: str, default: str = "") -> str:
 
 
 def sibling_lib_dirs(binary_path: str | Path) -> list[str]:
-    """
-    Cerca cartelle lib comuni accanto al bundle del tool.
-    Esempio:
-      .picobot/tools/piper/bin/piper
-      -> .picobot/tools/piper/lib
-      -> .picobot/tools/piper/lib64
-      -> .picobot/tools/piper/bin
-    """
     p = Path(str(binary_path)).expanduser().resolve()
     if not p.exists():
         return []

@@ -20,6 +20,76 @@ _PODCAST_COMMAND_RX = re.compile(r"^\s*/podcast\b", re.IGNORECASE)
 
 _YT_RX = re.compile(r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/", re.IGNORECASE)
 
+_GREETING_RX = re.compile(
+    r"^\s*(ciao|hey|hello|salve|ehi|buongiorno|buonasera|hi)\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+
+_TTS_INTENT_RX = re.compile(
+    r"\b("
+    r"tts|"
+    r"text to speech|"
+    r"voice output|"
+    r"speech synthesis|"
+    r"pronuncia|"
+    r"leggi ad alta voce|"
+    r"leggi questo testo|"
+    r"converti .* audio|"
+    r"genera .* audio|"
+    r"trasforma .* audio|"
+    r"voce|"
+    r"audio"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# pattern abbastanza conservativi: tts solo quando c'è testo reale da sintetizzare
+_TTS_QUOTED_RX = re.compile(
+    r'(?:"([^"]+)"|\'([^\']+)\')',
+    re.DOTALL,
+)
+
+_TTS_COLON_RX = re.compile(
+    r"\b(?:tts|pronuncia|leggi ad alta voce|leggi questo testo|converti(?: il)? testo in audio|genera audio(?: da)?|trasforma(?: il)? testo in audio)\b\s*:\s*(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_TTS_INLINE_RX = re.compile(
+    r"\b(?:leggi ad alta voce|pronuncia|tts)\b\s+(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_TTS_BAD_PAYLOADS = {
+    "",
+    "questo",
+    "questo testo",
+    "il testo",
+    "testo",
+    "in audio",
+    "audio",
+}
+
+
+_PYTHON_INTENT_RX = re.compile(
+    r"\b("
+    r"usa python|"
+    r"esegui in python|"
+    r"run in python|"
+    r"python:"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_PYTHON_COLON_RX = re.compile(
+    r"\b(?:python)\s*:\s*(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_PYTHON_INLINE_RX = re.compile(
+    r"\b(?:usa python per|esegui in python|run in python)\b\s+(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _extract_explicit_tool(text: str) -> tuple[str, dict] | None:
     match = _EXPLICIT_TOOL_RX.match(text or "")
@@ -41,10 +111,6 @@ def _extract_explicit_tool(text: str) -> tuple[str, dict] | None:
 
 
 def _candidate_score(candidate: RouteCandidate) -> float:
-    """
-    RouteCandidate nel router reale usa final_score.
-    Manteniamo fallback difensivo per evitare altri mismatch futuri.
-    """
     for attr in ("final_score", "score", "combined_score"):
         value = getattr(candidate, attr, None)
         if value is not None:
@@ -55,6 +121,83 @@ def _candidate_score(candidate: RouteCandidate) -> float:
     return 0.0
 
 
+def _looks_like_greeting(text: str) -> bool:
+    return bool(_GREETING_RX.match(text or ""))
+
+
+def _looks_like_tts_request(text: str) -> bool:
+    return bool(_TTS_INTENT_RX.search(text or ""))
+
+
+def _normalize_tts_text(text: str) -> str | None:
+    value = " ".join((text or "").strip().split())
+    if not value:
+        return None
+    if value.lower() in _TTS_BAD_PAYLOADS:
+        return None
+    return value
+
+
+def _extract_tts_args(text: str) -> dict | None:
+    raw = (text or "").strip()
+
+    # 1) priorità al testo tra virgolette
+    m = _TTS_QUOTED_RX.search(raw)
+    if m:
+        payload = m.group(1) or m.group(2) or ""
+        payload = _normalize_tts_text(payload)
+        if payload:
+            return {"text": payload}
+
+    # 2) pattern con ":" -> molto affidabile
+    m = _TTS_COLON_RX.search(raw)
+    if m:
+        payload = _normalize_tts_text(m.group(1))
+        if payload:
+            return {"text": payload}
+
+    # 3) pattern inline solo per forme veramente esplicite
+    m = _TTS_INLINE_RX.search(raw)
+    if m:
+        payload = _normalize_tts_text(m.group(1))
+        if payload:
+            return {"text": payload}
+
+    return None
+
+
+def _looks_like_python_request(text: str) -> bool:
+    return bool(_PYTHON_INTENT_RX.search(text or ""))
+
+
+def _normalize_python_code(text: str) -> str | None:
+    value = (text or "").strip()
+    if not value:
+        return None
+    lowered = " ".join(value.lower().split())
+    if lowered in {"python", "codice", "script", "usa python", "esegui in python"}:
+        return None
+    return value
+
+
+def _extract_python_args(text: str) -> dict | None:
+    raw = (text or "").strip()
+
+    m = _PYTHON_COLON_RX.search(raw)
+    if m:
+        payload = _normalize_python_code(m.group(1))
+        if payload:
+            return {"code": payload}
+
+    m = _PYTHON_INLINE_RX.search(raw)
+    if m:
+        payload = _normalize_python_code(m.group(1))
+        if payload:
+            return {"code": payload}
+
+    return None
+
+
 class RouterPolicy:
     def __init__(self) -> None:
         self.accept_threshold = float(cfg_get("router.accept_threshold", 0.52))
@@ -63,6 +206,16 @@ class RouterPolicy:
     def _explicit_decision(self, text: str) -> RouteDecision | None:
         raw = text or ""
         stripped = raw.strip()
+
+        if _looks_like_greeting(stripped):
+            return RouteDecision(
+                action="workflow",
+                name="chat",
+                reason="greeting fallback to chat",
+                args={},
+                score=1.0,
+                candidates=[],
+            )
 
         explicit_tool = _extract_explicit_tool(stripped)
         if explicit_tool is not None:
@@ -150,6 +303,7 @@ class RouterPolicy:
 
     def _apply_constraints(
         self,
+        user_text: str,
         candidates: list[RouteCandidate],
         ctx: SessionRouteContext,
     ) -> list[RouteCandidate]:
@@ -159,6 +313,13 @@ class RouterPolicy:
             record = candidate.record
 
             if record.requires_kb and (not ctx.has_kb or not ctx.kb_enabled):
+                continue
+
+            # TTS eleggibile solo se l'intento è davvero presente
+            if record.name == "tts" and not _looks_like_tts_request(user_text):
+                continue
+
+            if record.name == "python" and not _looks_like_python_request(user_text):
                 continue
 
             out.append(candidate)
@@ -176,7 +337,7 @@ class RouterPolicy:
         if explicit is not None:
             return explicit
 
-        filtered = self._apply_constraints(candidates, ctx)
+        filtered = self._apply_constraints(user_text, candidates, ctx)
 
         if not filtered:
             return RouteDecision(
@@ -217,12 +378,41 @@ class RouterPolicy:
 
         record = top1.record
         action = "tool" if record.kind == "tool" else "workflow"
+        args: dict = {}
+
+        # Se selezioniamo TTS ma non riusciamo a ricavare il testo,
+        # meglio fallback a chat che chiamare il tool con args vuoti.
+        if record.name == "tts":
+            tts_args = _extract_tts_args(user_text)
+            if not tts_args:
+                return RouteDecision(
+                    action="workflow",
+                    name="chat",
+                    reason="tts intent detected but missing explicit text payload",
+                    args={},
+                    score=top1_score,
+                    candidates=filtered,
+                )
+            args = tts_args
+
+        if record.name == "python":
+            py_args = _extract_python_args(user_text)
+            if not py_args:
+                return RouteDecision(
+                    action="workflow",
+                    name="chat",
+                    reason="python intent detected but missing explicit code payload",
+                    args={},
+                    score=top1_score,
+                    candidates=filtered,
+                )
+            args = py_args
 
         return RouteDecision(
             action=action,
             name=record.name,
             reason=f"selected top candidate: {record.id}",
-            args={},
+            args=args,
             score=top1_score,
             candidates=filtered,
         )

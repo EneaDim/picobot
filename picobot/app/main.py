@@ -9,6 +9,8 @@ from picobot.channels import CLIChannel, ChannelManager, TelegramChannel
 from picobot.config.loader import load_config
 from picobot.providers.ollama import OllamaProvider
 from picobot.runtime import AgentRuntime
+from picobot.ui.commands import handle_local_command
+from picobot.ui.terminal import TerminalUI
 
 
 DEBUG_CLI = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -17,34 +19,6 @@ DEBUG_CLI = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true",
 def _debug(msg: str) -> None:
     if DEBUG_CLI:
         print(f"[debug] {msg}")
-
-
-def _render_outbound_message(message) -> str | None:
-    mtype = getattr(message, "message_type", "")
-    payload = getattr(message, "payload", {}) or {}
-
-    if mtype == "outbound.status":
-        text = str(payload.get("text") or "").strip()
-        return text or None
-
-    if mtype == "outbound.error":
-        text = str(payload.get("text") or "").strip()
-        return text or "Errore sconosciuto."
-
-    if mtype == "outbound.audio":
-        audio_path = str(payload.get("audio_path") or "").strip()
-        caption = str(payload.get("caption") or "").strip()
-        if caption and audio_path:
-            return f"{caption}\n{audio_path}"
-        if audio_path:
-            return f"Audio generato: {audio_path}"
-        return caption or "Audio generato."
-
-    if mtype == "outbound.text":
-        text = str(payload.get("text") or "").strip()
-        return text or None
-
-    return None
 
 
 def _get_telegram_settings(cfg) -> tuple[bool, str]:
@@ -65,35 +39,16 @@ def _get_telegram_settings(cfg) -> tuple[bool, str]:
     return True, token
 
 
-async def _drain_cli_messages_live(cli_channel: CLIChannel, correlation_id: str) -> None:
-    while True:
-        msg = await cli_channel.outbound_queue.get()
-
-        if getattr(msg, "correlation_id", None) != correlation_id:
-            _debug(
-                f"skip message type={getattr(msg, 'message_type', '?')} "
-                f"corr={getattr(msg, 'correlation_id', None)} expected={correlation_id}"
-            )
-            continue
-
-        mtype = getattr(msg, "message_type", "?")
-        payload = getattr(msg, "payload", {}) or {}
-        _debug(f"recv type={mtype} payload_keys={list(payload.keys())}")
-
-        rendered = _render_outbound_message(msg)
-        if rendered:
-            print(rendered)
-
-        if mtype in {"outbound.text", "outbound.error"}:
-            break
-
-
 async def run_cli() -> None:
     cfg = load_config()
     workspace = Path(cfg.workspace).expanduser().resolve()
     _debug(f"workspace={workspace}")
 
+    ui = TerminalUI(cfg=cfg, workspace=workspace)
+
     bus = MessageBus()
+    await bus.start()
+    _debug("message bus started")
 
     ollama_cfg = getattr(cfg, "ollama", None)
     base_url = getattr(ollama_cfg, "base_url", None) or "http://localhost:11434"
@@ -137,7 +92,7 @@ async def run_cli() -> None:
             channel_manager.register(tg_channel)
             _debug("Telegram channel registered")
         except Exception as exc:
-            print(f"[telegram] init failed: {exc}")
+            ui.print_error(f"[telegram] init failed: {exc}")
     else:
         _debug("Telegram channel disabled or token missing/placeholder")
 
@@ -146,14 +101,12 @@ async def run_cli() -> None:
     await channel_manager.start()
     _debug("channel manager started")
 
-    print("picobot ready. CLI attiva. Scrivi /exit per uscire.")
-    if telegram_enabled:
-        print("Telegram channel abilitato.")
+    ui.print_banner(telegram_enabled=telegram_enabled)
 
     try:
         while True:
             try:
-                user_text = input("> ").strip()
+                user_text = await ui.prompt()
             except EOFError:
                 print()
                 break
@@ -164,8 +117,22 @@ async def run_cli() -> None:
             if not user_text:
                 continue
 
-            if user_text in {"/exit", "/quit"}:
-                break
+            cmd = handle_local_command(
+                raw_text=user_text,
+                cfg=cfg,
+                workspace=workspace,
+                session_id="default",
+                orchestrator=runtime.orchestrator,
+            )
+
+            if cmd.handled:
+                if cmd.text:
+                    ui.print_info(cmd.text)
+                if cmd.should_exit:
+                    break
+                if not cmd.bus_text:
+                    continue
+                user_text = cmd.bus_text
 
             correlation_id = await cli_channel.send_text(
                 text=user_text,
@@ -173,13 +140,20 @@ async def run_cli() -> None:
             )
             _debug(f"sent inbound.text correlation_id={correlation_id} text={user_text!r}")
 
-            await _drain_cli_messages_live(cli_channel, correlation_id)
+            await ui.drain_messages(
+                cli_channel=cli_channel,
+                correlation_id=correlation_id,
+                debug_cb=_debug,
+            )
 
     finally:
+        ui.clear_status()
         await channel_manager.stop()
         _debug("channel manager stopped")
         await runtime.stop()
         _debug("runtime stopped")
+        await bus.stop()
+        _debug("message bus stopped")
 
 
 def main() -> None:

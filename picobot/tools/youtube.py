@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+import os
+
 import json
 from typing import Awaitable, Callable
 
@@ -24,6 +27,19 @@ class YTSummaryArgs(BaseModel):
     lang: str | None = Field(default=None)
     prefer_sub_langs: list[str] = Field(default_factory=list)
     timeout_s: int = Field(default=180, ge=5, le=1200)
+
+DEBUG_DOCKER = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_docker(msg: str) -> None:
+    if DEBUG_DOCKER:
+        print(f"[debug][docker] {msg}")
+
+DEBUG_YT = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+def _debug_yt(msg: str) -> None:
+    if DEBUG_YT:
+        print(f"[debug][youtube] {msg}")
 
 
 def _normalize_ytdlp_bin(ytdlp_bin: str) -> str:

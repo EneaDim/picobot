@@ -1,23 +1,40 @@
 PYTHON ?= python
 PIP ?= pip
+DOCKER ?= docker
 
-.PHONY: help venv install reinstall clean init init-force init-tools snapshot test compile run chat cli
+SANDBOX_IMAGE ?= picobot-sandbox:latest
+SANDBOX_NAME ?= picobot-sandbox
+SANDBOX_DOCKERFILE ?= docker/picobot-sandbox.Dockerfile
+SANDBOX_WORKSPACE ?= $(CURDIR)/.picobot/workspace
+SANDBOX_CONTAINER_WORKSPACE ?= /workspace
+
+.PHONY: help venv install reinstall clean init init-force init-tools snapshot compile test run chat cli \
+        sandbox-build sandbox-up sandbox-down sandbox-status sandbox-logs sandbox-shell start start-nodebug stop
 
 help:
 	@echo "Targets disponibili:"
-	@echo "  venv        - crea il virtualenv .venv"
-	@echo "  install     - installa il progetto in editable mode + dev deps"
-	@echo "  reinstall   - reinstalla il progetto da zero nel venv attivo"
-	@echo "  clean       - pulisce cache Python"
-	@echo "  init        - crea .picobot/config.json e struttura base"
-	@echo "  init-force  - rigenera la config forzando overwrite"
-	@echo "  init-tools  - bootstrap dei tool locali"
-	@echo "  snapshot    - stampa snapshot tool"
-	@echo "  compile     - compileall su picobot e tests"
-	@echo "  test        - esegue pytest"
-	@echo "  run         - avvia picobot"
-	@echo "  chat        - alias di run"
-	@echo "  cli         - alias di run"
+	@echo "  venv            - crea il virtualenv .venv"
+	@echo "  install         - installa il progetto in editable mode + dev deps"
+	@echo "  reinstall       - reinstalla il progetto nel venv attivo"
+	@echo "  clean           - pulisce cache Python"
+	@echo "  init            - crea .picobot/config.json e struttura base"
+	@echo "  init-force      - rigenera la config forzando overwrite"
+	@echo "  init-tools      - bootstrap dei tool locali"
+	@echo "  snapshot        - stampa snapshot tool"
+	@echo "  compile         - compileall su picobot e tests"
+	@echo "  test            - esegue pytest"
+	@echo "  run             - avvia picobot"
+	@echo "  chat            - alias di run"
+	@echo "  cli             - alias di run"
+	@echo "  sandbox-build   - build immagine docker sandbox"
+	@echo "  sandbox-up      - avvia il container sandbox persistente"
+	@echo "  sandbox-down    - ferma e rimuove il container sandbox"
+	@echo "  sandbox-status  - mostra stato immagine/container sandbox"
+	@echo "  sandbox-logs    - mostra i log del container sandbox"
+	@echo "  sandbox-shell   - apre una shell nel container sandbox"
+	@echo "  start           - sandbox-up + avvio picobot con debug CLI attivo"
+	@echo "  start-nodebug   - sandbox-up + avvio picobot senza debug"
+	@echo "  stop            - sandbox-down"
 
 venv:
 	python3 -m venv .venv
@@ -62,3 +79,63 @@ chat:
 
 cli:
 	$(PYTHON) -m picobot
+
+sandbox-build:
+	@mkdir -p "$(SANDBOX_WORKSPACE)"
+	@if ! $(DOCKER) image inspect "$(SANDBOX_IMAGE)" >/dev/null 2>&1; then \
+		echo "[sandbox] building image $(SANDBOX_IMAGE)"; \
+		$(DOCKER) build -f "$(SANDBOX_DOCKERFILE)" -t "$(SANDBOX_IMAGE)" .; \
+	else \
+		echo "[sandbox] image $(SANDBOX_IMAGE) already exists"; \
+	fi
+
+sandbox-up: sandbox-build
+	@mkdir -p "$(SANDBOX_WORKSPACE)"
+	@if $(DOCKER) ps --format '{{.Names}}' | grep -Fxq "$(SANDBOX_NAME)"; then \
+		echo "[sandbox] container $(SANDBOX_NAME) already running"; \
+	elif $(DOCKER) ps -a --format '{{.Names}}' | grep -Fxq "$(SANDBOX_NAME)"; then \
+		echo "[sandbox] starting existing container $(SANDBOX_NAME)"; \
+		$(DOCKER) start "$(SANDBOX_NAME)" >/dev/null; \
+	else \
+		echo "[sandbox] creating container $(SANDBOX_NAME)"; \
+		$(DOCKER) run -d \
+			--name "$(SANDBOX_NAME)" \
+			-v "$(SANDBOX_WORKSPACE):$(SANDBOX_CONTAINER_WORKSPACE)" \
+			-w "$(SANDBOX_CONTAINER_WORKSPACE)" \
+			"$(SANDBOX_IMAGE)" \
+			sleep infinity >/dev/null; \
+	fi
+	@echo "[sandbox] ready"
+	@$(DOCKER) exec -w / "$(SANDBOX_NAME)" mkdir -p "$(SANDBOX_CONTAINER_WORKSPACE)/sandbox_runs"
+
+sandbox-down:
+	@if $(DOCKER) ps -a --format '{{.Names}}' | grep -Fxq "$(SANDBOX_NAME)"; then \
+		echo "[sandbox] removing container $(SANDBOX_NAME)"; \
+		$(DOCKER) rm -f "$(SANDBOX_NAME)" >/dev/null; \
+	else \
+		echo "[sandbox] container $(SANDBOX_NAME) not found"; \
+	fi
+
+sandbox-status:
+	@echo "== image =="
+	@$(DOCKER) image inspect "$(SANDBOX_IMAGE)" >/dev/null 2>&1 && echo "$(SANDBOX_IMAGE) present" || echo "$(SANDBOX_IMAGE) missing"
+	@echo
+	@echo "== container =="
+	@$(DOCKER) ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | (grep -E '^NAMES|$(SANDBOX_NAME)' || true)
+	@echo
+	@echo "== workspace =="
+	@echo "$(SANDBOX_WORKSPACE)"
+
+sandbox-logs:
+	@$(DOCKER) logs "$(SANDBOX_NAME)"
+
+sandbox-shell: sandbox-up
+	@$(DOCKER) exec -it -w / "$(SANDBOX_NAME)" sh
+
+start: sandbox-up
+	PICOBOT_DEBUG_CLI=1 $(PYTHON) -m picobot
+
+start-nodebug: sandbox-up
+	$(PYTHON) -m picobot
+
+stop: sandbox-down

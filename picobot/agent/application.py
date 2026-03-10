@@ -15,7 +15,7 @@ from picobot.providers.ollama import OllamaProvider
 from picobot.session.manager import Session
 from picobot.tools.file import make_file_tool
 from picobot.tools.news_digest import make_news_digest_tool
-from picobot.tools.paths import get_tool_bin
+from picobot.tools.paths import get_runtime_tool_bin
 from picobot.tools.python import make_python_tool
 from picobot.tools.registry import ToolRegistry
 from picobot.tools.retrieval import make_kb_ingest_pdf_tool, make_kb_query_tool
@@ -69,7 +69,7 @@ class Orchestrator:
         if self.tools.list():
             return
 
-        ytdlp_bin = get_tool_bin(self.cfg, "ytdlp", "yt-dlp")
+        ytdlp_bin = get_runtime_tool_bin(self.cfg, "ytdlp", "yt-dlp")
         youtube_cfg = getattr(self.cfg.tools, "youtube", None)
         ytdlp_args = list(getattr(youtube_cfg, "ytdlp_args", []) or [])
 
