@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Callable
 
@@ -16,18 +17,17 @@ from picobot.runtime.telegram_inbound_handler import TelegramInboundHandler
 from picobot.session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
+DEBUG_RUNTIME = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug(msg: str) -> None:
+    if DEBUG_RUNTIME:
+        print(f"[debug][runtime] {msg}")
 
 
 class AgentRuntime:
     """
     Runtime event-driven del progetto.
-
-    Ruolo:
-    - consuma inbound.text
-    - delega inbound.cron_tick e inbound.heartbeat_tick a handler dedicati
-    - delega inbound Telegram non testuali a handler dedicato
-    - invoca il turn pipeline dell'agente
-    - pubblica outbound e runtime events tramite RuntimeEventPublisher
     """
 
     def __init__(
@@ -87,6 +87,7 @@ class AgentRuntime:
 
         self._started = True
         self.heartbeat_handler.bind_runtime_state(runtime_started=True)
+        _debug("subscriptions registered")
 
     async def stop(self) -> None:
         self.heartbeat_handler.bind_runtime_state(runtime_started=False)
@@ -98,29 +99,41 @@ class AgentRuntime:
                 logger.exception("Failed to unsubscribe runtime handler")
         self._unsubscribe_callbacks.clear()
         self._started = False
+        _debug("runtime stopped")
 
     async def _on_inbound_text(self, message: BusMessage) -> None:
         if not isinstance(message, InboundMessage):
+            _debug(f"ignored non-InboundMessage type={type(message).__name__}")
             return
+
+        _debug(
+            f"received inbound.text corr={message.correlation_id} "
+            f"session={message.session_id} channel={message.channel}"
+        )
 
         session_id = (message.session_id or "default").strip() or "default"
         session = self.sessions.get(session_id)
         user_text = str(message.payload.get("text") or "").strip()
 
         if not user_text:
+            _debug("empty inbound text")
             await self.events.publish_empty_input_error(
                 inbound=message,
                 session=session,
             )
             return
 
+        _debug(f"user_text={user_text!r}")
+
         await self.events.publish_turn_started(
             inbound=message,
             session=session,
             user_text=user_text,
         )
+        _debug("published runtime.turn_started")
 
         async def status_cb(text: str) -> None:
+            _debug(f"publishing outbound.status text={text!r}")
             await self.events.publish_status(
                 inbound=message,
                 session=session,
@@ -131,16 +144,23 @@ class AgentRuntime:
             inbound=message,
             session_id=session.session_id,
         )
+        _debug("runtime hooks created")
 
         try:
+            _debug("calling orchestrator.one_turn()")
             result = await self.orchestrator.one_turn(
                 session=session,
                 user_text=user_text,
                 status=status_cb,
                 hooks=hooks,
             )
+            _debug(
+                f"one_turn completed action={result.action} "
+                f"reason={result.reason} has_audio={bool(result.audio_path)}"
+            )
         except Exception as exc:
             logger.exception("Runtime turn failed for session=%s", session.session_id)
+            _debug(f"one_turn failed error={exc}")
 
             await self.events.publish_turn_failed(
                 inbound=message,
@@ -160,9 +180,11 @@ class AgentRuntime:
             session=session,
             result=result,
         )
+        _debug("published runtime.turn_completed")
 
         await self.events.publish_turn_outputs(
             inbound=message,
             session=session,
             result=result,
         )
+        _debug("published outbound messages")

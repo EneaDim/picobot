@@ -11,7 +11,7 @@ from picobot.providers.ollama import OllamaProvider
 from picobot.runtime import AgentRuntime
 
 
-DEBUG_CLI = os.getenv("PICOBOT_DEBUG_CLI", "0").strip() in {"1", "true", "yes", "on"}
+DEBUG_CLI = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _debug(msg: str) -> None:
@@ -47,12 +47,22 @@ def _render_outbound_message(message) -> str | None:
     return None
 
 
-def _get_telegram_token(cfg) -> str:
+def _get_telegram_settings(cfg) -> tuple[bool, str]:
     telegram_cfg = getattr(cfg, "telegram", None)
-    token = ""
-    if telegram_cfg is not None:
-        token = getattr(telegram_cfg, "token", "") or getattr(telegram_cfg, "bot_token", "")
-    return str(token or "").strip()
+    if telegram_cfg is None:
+        return False, ""
+
+    enabled = bool(getattr(telegram_cfg, "enabled", False))
+    token = getattr(telegram_cfg, "token", "") or getattr(telegram_cfg, "bot_token", "")
+    token = str(token or "").strip()
+
+    if not enabled:
+        return False, ""
+
+    if not token or token == "YOUR_BOT_TOKEN":
+        return False, ""
+
+    return True, token
 
 
 async def _drain_cli_messages_live(cli_channel: CLIChannel, correlation_id: str) -> None:
@@ -116,8 +126,8 @@ async def run_cli() -> None:
     channel_manager.register(cli_channel)
     _debug("CLI channel registered")
 
-    telegram_token = _get_telegram_token(cfg)
-    if telegram_token:
+    telegram_enabled, telegram_token = _get_telegram_settings(cfg)
+    if telegram_enabled:
         try:
             tg_channel = TelegramChannel(
                 bus=bus,
@@ -128,6 +138,8 @@ async def run_cli() -> None:
             _debug("Telegram channel registered")
         except Exception as exc:
             print(f"[telegram] init failed: {exc}")
+    else:
+        _debug("Telegram channel disabled or token missing/placeholder")
 
     await runtime.start()
     _debug("runtime started")
@@ -135,7 +147,7 @@ async def run_cli() -> None:
     _debug("channel manager started")
 
     print("picobot ready. CLI attiva. Scrivi /exit per uscire.")
-    if telegram_token:
+    if telegram_enabled:
         print("Telegram channel abilitato.")
 
     try:

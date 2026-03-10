@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from uuid import uuid4
 
-from picobot.bus.events import BusMessage, InboundMessage, OutboundMessage, inbound_text
+from picobot.bus.events import OutboundMessage, inbound_text
 from picobot.bus.queue import MessageBus
 from picobot.channels.base import Channel
 
@@ -37,16 +38,18 @@ class CLIChannel(Channel):
         correlation_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
+        corr = correlation_id or uuid4().hex
+
         message = inbound_text(
             channel=self.name,
             chat_id="cli",
             session_id=(session_id or self.default_session_id),
             text=text,
-            correlation_id=correlation_id,
+            correlation_id=corr,
             metadata=metadata or {},
         )
         await self.bus.publish(message)
-        return message.correlation_id
+        return corr
 
     async def handle_outbound(self, message: OutboundMessage) -> None:
         await self.outbound_queue.put(message)
@@ -57,12 +60,6 @@ class CLIChannel(Channel):
         *,
         stop_on_final_text: bool = True,
     ) -> list[OutboundMessage]:
-        """
-        Raccoglie i messaggi outbound relativi a una correlation_id.
-
-        Restituisce tutti i messaggi raccolti fino al primo outbound.text
-        o outbound.error finale.
-        """
         collected: list[OutboundMessage] = []
 
         while True:
