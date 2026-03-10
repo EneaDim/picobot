@@ -201,32 +201,27 @@ class TelegramInboundHandler:
 
         kb_name = str(session.get_state().get("kb_name") or self.orchestrator.cfg.default_kb_name or "default").strip()
 
-        candidate_args = [
-            {"file_path": file_path, "kb_name": kb_name},
-            {"path": file_path, "kb_name": kb_name},
-            {"pdf_path": file_path, "kb_name": kb_name},
-        ]
-
         last_error = "kb ingest failed"
         result: dict[str, Any] | None = None
 
-        for args in candidate_args:
-            try:
-                maybe = await self.orchestrator._call_tool(
-                    "kb_ingest_pdf",
-                    args,
-                    workflow_name="telegram_document_ingest",
-                )
-            except Exception as exc:
-                last_error = str(exc)
-                continue
-
+        try:
+            maybe = await self.orchestrator._call_tool(
+                "kb_ingest_pdf",
+                {
+                    "file_path": file_path,
+                    "kb_name": kb_name,
+                },
+                workflow_name="telegram_document_ingest",
+            )
+        except Exception as exc:
+            last_error = str(exc)
+        else:
             if isinstance(maybe, dict) and maybe.get("ok"):
                 result = maybe
-                break
-
-            if isinstance(maybe, dict):
+            elif isinstance(maybe, dict):
                 last_error = str(maybe.get("error") or last_error)
+            else:
+                last_error = "invalid kb_ingest_pdf result"
 
         if not result:
             await self.events.publish_runtime_event(

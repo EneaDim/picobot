@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import asyncio
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from picobot.tools.base import ToolSpec, tool_error, tool_ok
+from picobot.tools.paths import get_runtime_tool_bin, get_tool_model
+from picobot.tools.terminal_tool import TerminalToolBase
 
 
 @dataclass(frozen=True)
@@ -17,50 +20,54 @@ class STTResult:
     backend: str
     ok: bool
     detail: str = ""
+    transcript_path: str = ""
+    meta_path: str = ""
 
 
-def _tools_cfg(cfg):
-    return getattr(cfg, "tools", None)
+class STTArgs(BaseModel):
+    audio_path: str = Field(..., min_length=1)
+    lang: str = Field(default="auto")
 
 
-def _resolve_whisper_cli(cfg) -> str:
-    tools = _tools_cfg(cfg)
-    if tools is None:
-        return ""
-    for candidate in [
-        getattr(tools, "whisper_cpp_cli", ""),
-        getattr(getattr(tools, "bins", None), "whisper_cpp_cli", ""),
-        getattr(tools, "whisper_cpp_main_path", ""),
-    ]:
-        value = str(candidate or "").strip()
-        if value:
-            return value
-    return ""
+def _local_executable_exists(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    if "/" in raw or "\\" in raw or raw.startswith("."):
+        return Path(raw).expanduser().exists()
+    return shutil.which(raw) is not None
 
 
-def _resolve_whisper_model(cfg) -> str:
-    tools = _tools_cfg(cfg)
-    if tools is None:
-        return ""
-    for candidate in [
-        getattr(tools, "whisper_model", ""),
-        getattr(getattr(tools, "models", None), "whisper_cpp", ""),
-    ]:
-        value = str(candidate or "").strip()
-        if value:
-            return value
-    return ""
+def _stage_audio_into_workspace(runner: TerminalToolBase, audio_path: str | Path) -> Path:
+    src = Path(audio_path).expanduser().resolve()
+    if not src.exists() or not src.is_file():
+        raise RuntimeError(f"audio file not found: {src}")
+
+    try:
+        runner.resolve_workspace_path(src)
+        return src
+    except Exception:
+        target_dir = runner.workspace_root / "inputs" / "stt" / uuid4().hex[:12]
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / src.name
+        shutil.copy2(src, target)
+        return target.resolve()
 
 
-async def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(cwd) if cwd else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out_b, err_b = await proc.communicate()
-    return int(proc.returncode or 0), out_b.decode("utf-8", errors="replace"), err_b.decode("utf-8", errors="replace")
+def _runtime_path(runner: TerminalToolBase, host_path: Path, *, purpose: str) -> str:
+    if runner.backend == "docker":
+        try:
+            return runner.map_host_path(host_path)
+        except Exception as exc:
+            raise RuntimeError(f"{purpose} must be inside workspace root for docker backend: {host_path}") from exc
+    return str(host_path)
+
+
+def _runtime_bin(runner: TerminalToolBase, value: str) -> str:
+    raw = str(value or "").strip()
+    if runner.backend == "docker":
+        return Path(raw).name or raw
+    return str(Path(raw).expanduser().resolve()) if ("/" in raw or "\\" in raw or raw.startswith(".")) else raw
 
 
 async def transcribe_audio_file(
@@ -69,100 +76,117 @@ async def transcribe_audio_file(
     audio_path: str | Path,
     lang: str = "auto",
 ) -> STTResult:
-    """
-    Funzione riusabile fuori dal tool registry.
-    """
-    backend = "whisper.cpp"
-    cli = _resolve_whisper_cli(cfg)
-    model = _resolve_whisper_model(cfg)
-    audio = Path(audio_path).expanduser().resolve()
+    backend_name = "whisper.cpp"
+    cli = get_runtime_tool_bin(cfg, "whisper_cpp_cli", "whisper-cli")
+    model = str(getattr(getattr(getattr(cfg, "tools", None), "whisper", None), "model", "") or "").strip()
+    if not model:
+        model = str(get_tool_model(cfg, "whisper_cpp", "/opt/picobot/models/whisper/ggml-small.bin") or "").strip()
 
-    if not audio.exists() or not audio.is_file():
+    runner = TerminalToolBase(
+        cfg=cfg,
+        allowed_bins=[cli or "whisper-cli"],
+        timeout_s=300,
+        max_output_bytes=200_000,
+    )
+
+    if runner.backend == "local" and not _local_executable_exists(cli):
         return STTResult(
             text="",
             language=lang,
-            backend=backend,
-            ok=False,
-            detail=f"audio file not found: {audio}",
-        )
-
-    if not cli or not Path(cli).expanduser().exists():
-        return STTResult(
-            text="",
-            language=lang,
-            backend=backend,
+            backend=backend_name,
             ok=False,
             detail="whisper.cpp CLI not available",
         )
 
-    if not model or not Path(model).expanduser().exists():
+    model_path = Path(model).expanduser().resolve()
+    if not model_path.exists() or not model_path.is_file():
         return STTResult(
             text="",
             language=lang,
-            backend=backend,
+            backend=backend_name,
             ok=False,
             detail="whisper model not available",
         )
 
+    try:
+        staged_audio = _stage_audio_into_workspace(runner, audio_path)
+        runtime_audio = _runtime_path(runner, staged_audio, purpose="audio input")
+        runtime_model = _runtime_path(runner, model_path, purpose="whisper model")
+    except Exception as exc:
+        return STTResult(
+            text="",
+            language=lang,
+            backend=backend_name,
+            ok=False,
+            detail=str(exc),
+        )
+
+    transcript_txt = staged_audio.with_suffix(".txt")
+    transcript_meta = staged_audio.with_suffix(".stt.meta.json")
+    transcript_base = str(Path(runtime_audio).with_suffix(""))
+
+    if transcript_txt.exists():
+        transcript_txt.unlink()
+    if transcript_meta.exists():
+        transcript_meta.unlink()
+
     cmd = [
-        str(Path(cli).expanduser()),
+        _runtime_bin(runner, cli or "whisper-cli"),
         "-m",
-        str(Path(model).expanduser()),
+        runtime_model,
         "-f",
-        str(audio),
+        runtime_audio,
         "-otxt",
         "-of",
-        str(audio.with_suffix("")),
+        transcript_base,
     ]
-
     if lang and str(lang).lower() != "auto":
         cmd.extend(["-l", str(lang)])
 
-    exit_code, stdout, stderr = await _run(cmd, cwd=audio.parent)
-    if exit_code != 0:
+    res = runner.run_cmd(cmd, prefix="[stt]", timeout_s=300)
+    if res.returncode != 0:
         return STTResult(
             text="",
             language=lang,
-            backend=backend,
+            backend=backend_name,
             ok=False,
-            detail=stderr.strip() or stdout.strip() or "whisper.cpp failed",
+            detail=(res.stderr or res.stdout or "whisper.cpp failed").strip(),
         )
 
-    txt_out = audio.with_suffix(".txt")
-    if not txt_out.exists():
+    if not transcript_txt.exists():
         return STTResult(
             text="",
             language=lang,
-            backend=backend,
+            backend=backend_name,
             ok=False,
             detail="transcript file not produced",
         )
 
-    text = txt_out.read_text(encoding="utf-8", errors="replace").strip()
-
-    meta = {
-        "backend": backend,
-        "audio_path": str(audio),
-        "language": lang,
-        "text_path": str(txt_out),
-    }
-    audio.with_suffix(".stt.meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2),
+    text = transcript_txt.read_text(encoding="utf-8", errors="replace").strip()
+    transcript_meta.write_text(
+        json.dumps(
+            {
+                "backend": runner.backend,
+                "engine": backend_name,
+                "audio_path": str(staged_audio),
+                "language": lang,
+                "text_path": str(transcript_txt),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
     return STTResult(
         text=text,
         language=lang,
-        backend=backend,
+        backend=runner.backend,
         ok=True,
         detail="",
+        transcript_path=str(transcript_txt),
+        meta_path=str(transcript_meta),
     )
-
-
-class STTArgs(BaseModel):
-    audio_path: str = Field(..., min_length=1)
-    lang: str = Field(default="auto")
 
 
 def make_stt_tool(cfg) -> ToolSpec:
@@ -181,13 +205,15 @@ def make_stt_tool(cfg) -> ToolSpec:
                 "language": result.language,
                 "backend": result.backend,
                 "detail": result.detail,
+                "transcript_path": result.transcript_path,
+                "meta_path": result.meta_path,
             },
             language=result.language,
         )
 
     return ToolSpec(
         name="stt",
-        description="Local speech-to-text transcription using configured local backend.",
+        description="Local speech-to-text transcription using the configured sandbox backend.",
         schema=STTArgs,
         handler=_handler,
     )

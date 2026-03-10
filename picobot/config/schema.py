@@ -158,6 +158,44 @@ class ToolsModelsConfig(BaseCfgModel):
     piper_en: str = ""
 
 
+class ToolsRuntimeConfig(BaseCfgModel):
+    mode: str = "docker"
+
+
+class ToolsWhisperConfig(BaseCfgModel):
+    model: str = "/opt/picobot/models/whisper/ggml-small.bin"
+
+
+class ToolsPiperConfig(BaseCfgModel):
+    installed_voices: list[str] = Field(default_factory=lambda: [
+        "it_IT-paola-medium",
+        "it_IT-aurora-medium",
+        "en_US-lessac-medium",
+        "en_US-amy-medium",
+        "en_US-ryan-high",
+    ])
+    default_voice_by_lang: dict[str, str] = Field(default_factory=lambda: {
+        "it": "it_IT-paola-medium",
+        "en": "en_US-lessac-medium",
+    })
+    models_dir: str = "/opt/picobot/models/piper"
+    custom_voice_urls: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+
+class ToolsPiperConfig(BaseCfgModel):
+    voices: list[str] = Field(default_factory=lambda: [
+        "it_IT-paola-medium",
+        "it_IT-aurora-medium",
+        "en_US-lessac-medium",
+        "en_US-amy-medium",
+        "en_US-ryan-high",
+    ])
+    default_voice_by_lang: dict[str, str] = Field(default_factory=lambda: {
+        "it": "it_IT-paola-medium",
+        "en": "en_US-lessac-medium",
+    })
+
+
 class ToolsSandboxExecConfig(BaseCfgModel):
     enabled: bool = True
     timeout_s: int = 180
@@ -180,10 +218,11 @@ class ToolsYouTubeConfig(BaseCfgModel):
 
 
 class ToolsConfig(BaseCfgModel):
-    base_dir: str = ".picobot/tools"
-
+    runtime: ToolsRuntimeConfig = Field(default_factory=ToolsRuntimeConfig)
     bins: ToolsBinsConfig = Field(default_factory=ToolsBinsConfig)
     models: ToolsModelsConfig = Field(default_factory=ToolsModelsConfig)
+    whisper: ToolsWhisperConfig = Field(default_factory=ToolsWhisperConfig)
+    piper: ToolsPiperConfig = Field(default_factory=ToolsPiperConfig)
     sandbox_exec: ToolsSandboxExecConfig = Field(default_factory=ToolsSandboxExecConfig)
     youtube: ToolsYouTubeConfig = Field(default_factory=ToolsYouTubeConfig)
 
@@ -281,7 +320,25 @@ class SandboxWebConfig(BaseCfgModel):
     whitelist_domains: list[str] = Field(default_factory=list)
 
 
+class SandboxRuntimeDockerConfig(BaseCfgModel):
+    enabled: bool = True
+    image: str = "picobot-sandbox:latest"
+    container_name: str = "picobot-sandbox"
+    docker_bin: str = "docker"
+    container_workspace_root: str = "/workspace"
+    auto_create: bool = True
+    extra_run_args: list[str] = Field(default_factory=list)
+
+
+class SandboxRuntimeConfig(BaseCfgModel):
+    backend: str = "local"
+    workspace_root: str = ".picobot/workspace"
+    runs_dir: str = ".picobot/workspace/sandbox_runs"
+    docker: SandboxRuntimeDockerConfig = Field(default_factory=SandboxRuntimeDockerConfig)
+
+
 class SandboxConfig(BaseCfgModel):
+    runtime: SandboxRuntimeConfig = Field(default_factory=SandboxRuntimeConfig)
     file: SandboxFileConfig = Field(default_factory=SandboxFileConfig)
     python: SandboxPythonConfig = Field(default_factory=SandboxPythonConfig)
     web: SandboxWebConfig = Field(default_factory=SandboxWebConfig)
@@ -401,9 +458,9 @@ class Config(BaseCfgModel):
         _setattr_no_validate(self.podcast, "output_dir", str(Path(self.podcast.output_dir).expanduser()))
         _setattr_no_validate(self.sandbox.file, "root", str(Path(self.sandbox.file.root).expanduser()))
         _setattr_no_validate(self.sandbox.python, "cwd", str(Path(self.sandbox.python.cwd).expanduser()))
+        _setattr_no_validate(self.sandbox.runtime, "workspace_root", str(Path(self.sandbox.runtime.workspace_root).expanduser()))
+        _setattr_no_validate(self.sandbox.runtime, "runs_dir", str(Path(self.sandbox.runtime.runs_dir).expanduser()))
 
-        if self.tools.base_dir:
-            _setattr_no_validate(self.tools, "base_dir", str(Path(self.tools.base_dir).expanduser()))
         if self.tools.whisper_cpp_main_path:
             _setattr_no_validate(self.tools, "whisper_cpp_main_path", str(Path(self.tools.whisper_cpp_main_path).expanduser()))
         if self.tools.whisper_cpp_dir:

@@ -1,37 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
-import platform
-import shutil
-import stat
-import tarfile
-import urllib.request
-from dataclasses import dataclass
+import subprocess
 from pathlib import Path
 from typing import Any
-
-
-YT_DLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
-PIPER_LINUX_X86_64_URL = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz"
-
-VOICE_URLS = {
-    "it_IT-paola-medium": {
-        "onnx": "https://huggingface.co/rhasspy/piper-voices/resolve/main/it/it_IT/paola/medium/it_IT-paola-medium.onnx",
-        "json": "https://huggingface.co/rhasspy/piper-voices/resolve/main/it/it_IT/paola/medium/it_IT-paola-medium.onnx.json",
-    },
-    "en_US-lessac-medium": {
-        "onnx": "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx",
-        "json": "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json",
-    },
-}
-
-
-@dataclass(frozen=True)
-class DownloadResult:
-    path: str
-    downloaded: bool
-    size_bytes: int
 
 
 def resolve_config_path(config_path: str | None = None) -> Path:
@@ -51,12 +23,6 @@ def resolve_config_path(config_path: str | None = None) -> Path:
     raise FileNotFoundError("Config non trovata. Crea .picobot/config.json")
 
 
-def _repo_root_from_config(cfg_path: Path) -> Path:
-    if cfg_path.parent.name == ".picobot":
-        return cfg_path.parent.parent.resolve()
-    return Path.cwd().resolve()
-
-
 def _load_json(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -73,397 +39,250 @@ def _get_in(d: dict[str, Any], path: str, default: Any = None) -> Any:
     return cur
 
 
-def _resolve_repo_path(repo_root: Path, value: str | None, default: str = "") -> Path:
-    raw = str(value or default or "").strip()
-    if not raw:
-        raise ValueError("path vuoto")
+def _repo_root_from_config(cfg_path: Path) -> Path:
+    if cfg_path.parent.name == ".picobot":
+        return cfg_path.parent.parent.resolve()
+    return Path.cwd().resolve()
+
+
+def _workspace_root(repo_root: Path, cfg: dict[str, Any]) -> Path:
+    raw = str(_get_in(cfg, "workspace", ".picobot/workspace") or ".picobot/workspace").strip()
     p = Path(raw).expanduser()
-    if p.is_absolute():
-        return p.resolve()
-    return (repo_root / p).resolve()
+    return p.resolve() if p.is_absolute() else (repo_root / p).resolve()
 
 
-def _ensure_parent(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-
-def _download(url: str, dest: Path, *, overwrite: bool) -> DownloadResult:
-    if dest.exists() and not overwrite:
-        return DownloadResult(path=str(dest), downloaded=False, size_bytes=dest.stat().st_size)
-
-    _ensure_parent(dest)
-
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "picobot-init-tools/1.0",
-            "Accept": "*/*",
-        },
-    )
-    with urllib.request.urlopen(req) as resp:
-        data = resp.read()
-
-    dest.write_bytes(data)
-    return DownloadResult(path=str(dest), downloaded=True, size_bytes=len(data))
-
-
-def _make_executable(path: Path) -> None:
-    mode = path.stat().st_mode
-    path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-
-def _safe_extract_tar(archive_path: Path, target_dir: Path) -> None:
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target_root = target_dir.resolve()
-
-    with tarfile.open(archive_path, "r:gz") as tf:
-        for member in tf.getmembers():
-            member_target = (target_dir / member.name).resolve()
-            if member_target != target_root and target_root not in member_target.parents:
-                raise RuntimeError(f"Tar archive contains unsafe path: {member.name}")
-
-        tf.extractall(target_dir)
-
-
-def _linux_x86_64() -> bool:
-    sys_name = platform.system().lower()
-    machine = platform.machine().lower()
-    return sys_name == "linux" and machine in {"x86_64", "amd64"}
-
-
-def _check_piper_bundle(bundle_root: Path) -> dict[str, Any]:
-    piper_bin = bundle_root / "bin" / "piper"
-    lib_dir = bundle_root / "lib"
-    espeak_dir = bundle_root / "espeak-ng-data"
-
-    lib_candidates = sorted([p.name for p in lib_dir.glob("*")]) if lib_dir.exists() else []
+def _docker_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     return {
-        "bundle_root": str(bundle_root),
-        "piper_bin_exists": piper_bin.exists(),
-        "lib_dir_exists": lib_dir.exists(),
-        "espeak_ng_data_exists": espeak_dir.exists(),
-        "lib_count": len(lib_candidates),
-        "sample_libs": lib_candidates[:20],
+        "docker_bin": str(_get_in(cfg, "sandbox.runtime.docker.docker_bin", "docker") or "docker"),
+        "image": str(_get_in(cfg, "sandbox.runtime.docker.image", "picobot-sandbox:latest") or "picobot-sandbox:latest"),
+        "container_name": str(_get_in(cfg, "sandbox.runtime.docker.container_name", "picobot-sandbox") or "picobot-sandbox"),
+        "container_workspace_root": str(_get_in(cfg, "sandbox.runtime.docker.container_workspace_root", "/workspace") or "/workspace"),
+        "auto_create": bool(_get_in(cfg, "sandbox.runtime.docker.auto_create", True)),
+        "extra_run_args": list(_get_in(cfg, "sandbox.runtime.docker.extra_run_args", []) or []),
     }
 
 
-def _find_extracted_piper_root(extract_root: Path) -> Path:
-    direct = extract_root / "piper"
-    if direct.exists() and direct.is_dir():
-        return direct
+def _installed_voices(cfg: dict[str, Any]) -> list[str]:
+    voices = []
+    seen = set()
 
-    for child in extract_root.iterdir():
-        if child.is_dir() and (child / "piper").exists():
-            return child
+    def add(v: str | None) -> None:
+        value = str(v or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            voices.append(value)
 
-    raise RuntimeError("Bundle Piper estratto ma layout non riconosciuto")
+    for v in _get_in(cfg, "tools.piper.installed_voices", []) or []:
+        add(v)
+
+    podcast = _get_in(cfg, "podcast.voices", {}) or {}
+    if isinstance(podcast, dict):
+        for lang_block in podcast.values():
+            if not isinstance(lang_block, dict):
+                continue
+            for role_cfg in lang_block.values():
+                if isinstance(role_cfg, dict):
+                    add(role_cfg.get("voice_id"))
+
+    return voices
 
 
-def _install_piper_bundle_from_extracted(extracted_root: Path, piper_root: Path) -> dict[str, Any]:
-    bin_dir = piper_root / "bin"
-    lib_dir = piper_root / "lib"
-    espeak_dir = piper_root / "espeak-ng-data"
+def _custom_voice_urls(cfg: dict[str, Any]) -> dict[str, dict[str, str]]:
+    raw = _get_in(cfg, "tools.piper.custom_voice_urls", {}) or {}
+    if not isinstance(raw, dict):
+        return {}
 
-    if bin_dir.exists():
-        shutil.rmtree(bin_dir)
-    if lib_dir.exists():
-        shutil.rmtree(lib_dir)
-    if espeak_dir.exists():
-        shutil.rmtree(espeak_dir)
-
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    lib_dir.mkdir(parents=True, exist_ok=True)
-
-    bin_src = extracted_root / "piper"
-    if not bin_src.exists() or not bin_src.is_file():
-        raise RuntimeError(f"Binario Piper non trovato nel bundle estratto: {bin_src}")
-
-    shutil.copy2(bin_src, bin_dir / "piper")
-    _make_executable(bin_dir / "piper")
-
-    phonemize_src = extracted_root / "piper_phonemize"
-    if phonemize_src.exists() and phonemize_src.is_file():
-        shutil.copy2(phonemize_src, bin_dir / "piper_phonemize")
-        _make_executable(bin_dir / "piper_phonemize")
-
-    copied_libs: list[str] = []
-    for item in extracted_root.iterdir():
-        if not item.is_file():
+    out: dict[str, dict[str, str]] = {}
+    for voice_id, urls in raw.items():
+        if not isinstance(urls, dict):
             continue
-        name = item.name
-        if ".so" in name or name.endswith(".ort"):
-            shutil.copy2(item, lib_dir / name)
-            copied_libs.append(name)
-
-    espeak_src = extracted_root / "espeak-ng-data"
-    if espeak_src.exists() and espeak_src.is_dir():
-        shutil.copytree(espeak_src, espeak_dir)
-
-    return {
-        "installed_bin": str((bin_dir / "piper").resolve()),
-        "installed_phonemize_bin": str((bin_dir / "piper_phonemize").resolve()) if (bin_dir / "piper_phonemize").exists() else None,
-        "installed_lib_dir": str(lib_dir.resolve()),
-        "installed_espeak_dir": str(espeak_dir.resolve()) if espeak_dir.exists() else None,
-        "copied_libs": copied_libs,
-    }
+        onnx = str(urls.get("onnx") or "").strip()
+        js = str(urls.get("json") or "").strip()
+        if onnx and js:
+            out[str(voice_id)] = {"onnx": onnx, "json": js}
+    return out
 
 
-def _download_piper_bundle(repo_root: Path, cfg: dict[str, Any], overwrite: bool) -> dict[str, Any]:
-    if not _linux_x86_64():
-        raise RuntimeError("Questo bootstrap Piper è configurato per Linux x86_64")
-
-    tools_base = _resolve_repo_path(repo_root, _get_in(cfg, "tools.base_dir"), ".picobot/tools")
-    piper_root = tools_base / "piper"
-    archive_path = piper_root / "downloads" / "piper_linux_x86_64.tar.gz"
-
-    piper_root.mkdir(parents=True, exist_ok=True)
-    dl = _download(PIPER_LINUX_X86_64_URL, archive_path, overwrite=overwrite)
-
-    extract_root = piper_root / "_extract"
-    if extract_root.exists() and overwrite:
-        shutil.rmtree(extract_root)
-
-    _safe_extract_tar(archive_path, extract_root)
-
-    extracted_root = _find_extracted_piper_root(extract_root)
-    install_info = _install_piper_bundle_from_extracted(extracted_root, piper_root)
-
-    bundle_info = _check_piper_bundle(piper_root)
-    bundle_info["download"] = {
-        "path": dl.path,
-        "downloaded": dl.downloaded,
-        "size_bytes": dl.size_bytes,
-    }
-    bundle_info["install"] = install_info
-    bundle_info["extracted_root"] = str(extracted_root)
-    return bundle_info
-
-
-def _download_voice_pair(dest_dir: Path, voice_name: str, overwrite: bool) -> dict[str, Any]:
-    if voice_name not in VOICE_URLS:
-        raise RuntimeError(f"Voice non supportata da bootstrap: {voice_name}")
-
-    urls = VOICE_URLS[voice_name]
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    onnx_path = dest_dir / f"{voice_name}.onnx"
-    json_path = dest_dir / f"{voice_name}.onnx.json"
-
-    onnx_res = _download(urls["onnx"], onnx_path, overwrite=overwrite)
-    json_res = _download(urls["json"], json_path, overwrite=overwrite)
-
-    return {
-        "voice": voice_name,
-        "onnx": {
-            "path": onnx_res.path,
-            "downloaded": onnx_res.downloaded,
-            "size_bytes": onnx_res.size_bytes,
-        },
-        "json": {
-            "path": json_res.path,
-            "downloaded": json_res.downloaded,
-            "size_bytes": json_res.size_bytes,
-        },
-    }
-
-
-def _download_piper_models(repo_root: Path, cfg: dict[str, Any], overwrite: bool) -> dict[str, Any]:
-    models = _get_in(cfg, "tools.models", {}) or {}
-    piper_it = _resolve_repo_path(repo_root, models.get("piper_it"), ".picobot/tools/piper/models/it_IT-paola-medium.onnx")
-    piper_en = _resolve_repo_path(repo_root, models.get("piper_en"), ".picobot/tools/piper/models/en_US-lessac-medium.onnx")
-
-    return {
-        "it": _download_voice_pair(piper_it.parent, "it_IT-paola-medium", overwrite=overwrite),
-        "en": _download_voice_pair(piper_en.parent, "en_US-lessac-medium", overwrite=overwrite),
-    }
-
-
-def _download_ytdlp(repo_root: Path, cfg: dict[str, Any], overwrite: bool) -> dict[str, Any]:
-    ytdlp_path = _resolve_repo_path(
-        repo_root,
-        _get_in(cfg, "tools.bins.ytdlp"),
-        ".picobot/tools/yt-dlp/bin/yt-dlp",
-    )
-    res = _download(YT_DLP_URL, ytdlp_path, overwrite=overwrite)
-    _make_executable(ytdlp_path)
-
-    node_path = shutil.which("node") or "/usr/bin/node"
-    return {
-        "binary": {
-            "path": str(ytdlp_path),
-            "downloaded": res.downloaded,
-            "size_bytes": res.size_bytes,
-            "exists": ytdlp_path.exists(),
-            "executable": os.access(ytdlp_path, os.X_OK),
-        },
-        "js_runtime": {
-            "node_path": node_path,
-            "exists": Path(node_path).exists(),
-        },
-    }
-
-
-def init_tool_dirs(cfg_path: str | Path | None = None) -> dict[str, Any]:
-    """
-    API usata dai test: inizializza la struttura directory dei tool
-    a partire dalla config, senza forzare download.
-    """
-    resolved_cfg = resolve_config_path(str(cfg_path) if cfg_path is not None else None)
-    cfg = _load_json(resolved_cfg)
-    repo_root = _repo_root_from_config(resolved_cfg)
-
-    tools_base = _resolve_repo_path(repo_root, _get_in(cfg, "tools.base_dir"), ".picobot/tools")
-    tools_base.mkdir(parents=True, exist_ok=True)
-
-    bins = _get_in(cfg, "tools.bins", {}) or {}
-    models = _get_in(cfg, "tools.models", {}) or {}
-
-    created: list[str] = [str(tools_base)]
-
-    for value in bins.values():
-        if not value or not isinstance(value, str):
-            continue
-
-        raw = Path(value).expanduser()
-        if raw.is_absolute():
-            p = raw.resolve()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            created.append(str(p.parent))
-
-    for value in models.values():
-        if not value or not isinstance(value, str):
-            continue
-
-        raw = Path(value).expanduser()
-        if raw.is_absolute():
-            p = raw.resolve()
-        else:
-            p = _resolve_repo_path(repo_root, value)
-
-        p.parent.mkdir(parents=True, exist_ok=True)
-        created.append(str(p.parent))
-
-    return {
-        "ok": True,
-        "config_path": str(resolved_cfg),
-        "repo_root": str(repo_root),
-        "tools_root": str(tools_base),
-        "tools_base_dir": str(tools_base),
-        "created_dirs": sorted(set(created)),
-    }
-
-
-def tool_snapshot(cfg_path: str | Path | None = None) -> dict[str, Any]:
-    resolved_cfg = resolve_config_path(str(cfg_path) if cfg_path is not None else None)
-    cfg = _load_json(resolved_cfg)
-    repo_root = _repo_root_from_config(resolved_cfg)
-
-    tools_base = _resolve_repo_path(repo_root, _get_in(cfg, "tools.base_dir"), ".picobot/tools")
-    bins = _get_in(cfg, "tools.bins", {}) or {}
-    models = _get_in(cfg, "tools.models", {}) or {}
-
-    resolved_bins: dict[str, Any] = {}
-    for key, value in bins.items():
-        if not value or not isinstance(value, str):
-            continue
-
-        raw = Path(value).expanduser()
-        if raw.is_absolute():
-            path = raw.resolve()
-            managed = False
-        else:
-            path = _resolve_repo_path(repo_root, value)
-            managed = True
-
-        resolved_bins[key] = {
-            "path": str(path),
-            "exists": path.exists(),
-            "managed": managed,
-            "executable": os.access(path, os.X_OK) if path.exists() else False,
-        }
-
-    resolved_models: dict[str, Any] = {}
-    for key, value in models.items():
-        if not value or not isinstance(value, str):
-            continue
-
-        raw = Path(value).expanduser()
-        if raw.is_absolute():
-            path = raw.resolve()
-        else:
-            path = _resolve_repo_path(repo_root, value)
-
-        resolved_models[key] = {
-            "path": str(path),
-            "exists": path.exists(),
-        }
-
-    return {
-        "config_path": str(resolved_cfg),
-        "repo_root": str(repo_root),
-        "tools_root": str(tools_base),
-        "tools_base_dir": str(tools_base),
-        "bins": resolved_bins,
-        "models": resolved_models,
-    }
-
-
-def bootstrap_tools(
-    config_path: str | None = None,
+def _docker_run(
+    cfg: dict[str, Any],
     *,
-    overwrite: bool = False,
-    include_ytdlp: bool = True,
-    include_piper_bundle: bool = True,
-    include_piper_models: bool = True,
-) -> dict[str, Any]:
-    cfg_path = resolve_config_path(config_path)
-    cfg = _load_json(cfg_path)
+    argv: list[str],
+    mount_workspace: bool = True,
+    extra_env: dict[str, str] | None = None,
+    config_path: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    docker = _docker_cfg(cfg)
+    cfg_path = config_path or resolve_config_path(None)
     repo_root = _repo_root_from_config(cfg_path)
+    workspace_root = _workspace_root(repo_root, cfg)
+    workspace_root.mkdir(parents=True, exist_ok=True)
 
-    report: dict[str, Any] = {
-        "config_path": str(cfg_path),
+    cmd = [docker["docker_bin"], "run", "--rm"]
+
+    if mount_workspace:
+        cmd += ["-v", f"{workspace_root}:{docker['container_workspace_root']}"]
+
+    for item in docker["extra_run_args"]:
+        cmd.append(str(item))
+
+    for key, value in (extra_env or {}).items():
+        cmd += ["-e", f"{key}={value}"]
+
+    cmd += [docker["image"]]
+    cmd += argv
+
+    return subprocess.run(cmd, text=True, capture_output=True)
+
+
+def tool_snapshot(config_path: str | Path | None = None) -> dict[str, Any]:
+    resolved_cfg = resolve_config_path(str(config_path) if config_path is not None else None)
+    cfg = _load_json(resolved_cfg)
+    repo_root = _repo_root_from_config(resolved_cfg)
+    workspace_root = _workspace_root(repo_root, cfg)
+    docker = _docker_cfg(cfg)
+
+    voices = _installed_voices(cfg)
+
+    probe = _docker_run(
+        cfg,
+        argv=[
+            "bash",
+            "-lc",
+            "command -v yt-dlp || true; command -v ffmpeg || true; command -v whisper-cli || true; command -v piper || true; "
+            "ls -1 /opt/picobot/models/piper 2>/dev/null || true; "
+            "ls -1 /opt/picobot/models/whisper 2>/dev/null || true",
+        ],
+        config_path=resolved_cfg,
+    )
+
+    return {
+        "config_path": str(resolved_cfg),
         "repo_root": str(repo_root),
-        "platform": {
-            "system": platform.system(),
-            "machine": platform.machine(),
+        "workspace_root": str(workspace_root),
+        "docker": docker,
+        "voices_requested": voices,
+        "custom_voice_urls": _custom_voice_urls(cfg),
+        "runtime_probe": {
+            "returncode": probe.returncode,
+            "stdout": probe.stdout,
+            "stderr": probe.stderr,
         },
-        "steps": {},
     }
 
-    if include_ytdlp:
-        report["steps"]["yt_dlp"] = _download_ytdlp(repo_root, cfg, overwrite=overwrite)
 
-    if include_piper_bundle:
-        report["steps"]["piper_bundle"] = _download_piper_bundle(repo_root, cfg, overwrite=overwrite)
+def bootstrap_tools(config_path: str | None = None) -> dict[str, Any]:
+    resolved_cfg = resolve_config_path(config_path)
+    cfg = _load_json(resolved_cfg)
+    voices = ",".join(_installed_voices(cfg))
+    custom_voice_urls = json.dumps(_custom_voice_urls(cfg), ensure_ascii=False)
 
-    if include_piper_models:
-        report["steps"]["piper_models"] = _download_piper_models(repo_root, cfg, overwrite=overwrite)
+    result = _docker_run(
+        cfg,
+        argv=["bash", "-lc", "picobot-runtime-bootstrap"],
+        extra_env={
+            "PICO_BOOTSTRAP_TOOLS": "1",
+            "PICO_PIPER_VOICES": voices,
+            "PICO_PIPER_CUSTOM_VOICE_URLS": custom_voice_urls,
+        },
+        config_path=resolved_cfg,
+    )
 
-    report["snapshot"] = tool_snapshot(cfg_path)
-    return report
+    return {
+        "config_path": str(resolved_cfg),
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "voices_requested": _installed_voices(cfg),
+        "custom_voice_urls": _custom_voice_urls(cfg),
+        "ok": result.returncode == 0,
+    }
+
+
+def tool_doctor(config_path: str | None = None) -> dict[str, Any]:
+    resolved_cfg = resolve_config_path(config_path)
+    cfg = _load_json(resolved_cfg)
+
+    checks = []
+
+    bootstrap = _docker_run(
+        cfg,
+        argv=["bash", "-lc", "command -v picobot-runtime-bootstrap"],
+        config_path=resolved_cfg,
+    )
+    checks.append({
+        "name": "runtime_bootstrap_command",
+        "ok": bootstrap.returncode == 0,
+        "stdout": bootstrap.stdout,
+        "stderr": bootstrap.stderr,
+    })
+
+    binaries = _docker_run(
+        cfg,
+        argv=["bash", "-lc", "command -v yt-dlp && command -v ffmpeg && command -v whisper-cli && command -v piper"],
+        config_path=resolved_cfg,
+    )
+    checks.append({
+        "name": "runtime_binaries",
+        "ok": binaries.returncode == 0,
+        "stdout": binaries.stdout,
+        "stderr": binaries.stderr,
+    })
+
+    piper_models = _docker_run(
+        cfg,
+        argv=["bash", "-lc", "test -d /opt/picobot/models/piper && ls -1 /opt/picobot/models/piper"],
+        config_path=resolved_cfg,
+    )
+    checks.append({
+        "name": "piper_models_dir",
+        "ok": piper_models.returncode == 0,
+        "stdout": piper_models.stdout,
+        "stderr": piper_models.stderr,
+    })
+
+    whisper_model = _docker_run(
+        cfg,
+        argv=["bash", "-lc", "test -f /opt/picobot/models/whisper/ggml-small.bin"],
+        config_path=resolved_cfg,
+    )
+    checks.append({
+        "name": "whisper_model",
+        "ok": whisper_model.returncode == 0,
+        "stdout": whisper_model.stdout,
+        "stderr": whisper_model.stderr,
+    })
+
+    ok = all(bool(item["ok"]) for item in checks)
+
+    return {
+        "config_path": str(resolved_cfg),
+        "ok": ok,
+        "checks": checks,
+    }
 
 
 __all__ = [
     "bootstrap_tools",
-    "init_tool_dirs",
-    "resolve_config_path",
+    "tool_doctor",
     "tool_snapshot",
+    "resolve_config_path",
 ]
+
 
 def main() -> None:
     import argparse
-    import json
 
-    parser = argparse.ArgumentParser(description="Bootstrap local tools for picobot")
-    parser.add_argument("--config", default=".picobot/config.json", help="Path to config.json")
-    parser.add_argument("--overwrite", action="store_true", help="Redownload / reinstall assets")
-    parser.add_argument("--snapshot", action="store_true", help="Only print tool snapshot")
+    parser = argparse.ArgumentParser(description="Docker-aware tool bootstrap / doctor for picobot")
+    parser.add_argument("--config", default=None, help="Path to config.json")
+    parser.add_argument("command", choices=["snapshot", "doctor", "bootstrap"], nargs="?", default="snapshot")
     args = parser.parse_args()
 
-    if args.snapshot:
+    if args.command == "snapshot":
         result = tool_snapshot(args.config)
+    elif args.command == "doctor":
+        result = tool_doctor(args.config)
     else:
-        result = bootstrap_tools(args.config, overwrite=args.overwrite)
+        result = bootstrap_tools(args.config)
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

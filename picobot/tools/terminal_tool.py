@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -78,6 +79,55 @@ class TerminalToolBase:
         raw = str(self._cfg("sandbox.runtime.backend", "local") or "local").strip().lower()
         return "docker" if raw == "docker" else "local"
 
+    def _tools_root(self) -> Path:
+        raw = str(self._cfg("tools.base_dir", "") or "").strip()
+        if raw:
+            target = Path(raw).expanduser().resolve()
+        else:
+            target = (self.workspace_root / "tools").resolve()
+
+        try:
+            if os.path.commonpath([str(self.workspace_root), str(target)]) != str(self.workspace_root):
+                return (self.workspace_root / "tools").resolve()
+        except Exception:
+            return (self.workspace_root / "tools").resolve()
+
+        return target
+
+    def _docker_tools_root(self, container_workspace_root: str) -> str:
+        tools_root = self._tools_root()
+        rel = tools_root.relative_to(self.workspace_root)
+        return str((Path(container_workspace_root) / rel).as_posix())
+
+    def _docker_piper_voices(self) -> str:
+        values = self._cfg("tools.piper.voices", []) or []
+        out: list[str] = []
+        seen: set[str] = set()
+
+        for value in values:
+            voice = str(value or "").strip()
+            if voice and voice not in seen:
+                seen.add(voice)
+                out.append(voice)
+
+        return ",".join(out)
+
+    def _merge_docker_bootstrap_env(self, extra_run_args: list[str], *, container_workspace_root: str) -> list[str]:
+        args = list(extra_run_args or [])
+
+        joined = " ".join(args)
+        if "PICO_TOOLS_ROOT=" not in joined:
+            args.extend(["-e", f"PICO_TOOLS_ROOT={self._docker_tools_root(container_workspace_root)}"])
+
+        voices = self._docker_piper_voices()
+        if voices and "PICO_PIPER_VOICES=" not in joined:
+            args.extend(["-e", f"PICO_PIPER_VOICES={voices}"])
+
+        if "PICO_BOOTSTRAP_TOOLS=" not in joined:
+            args.extend(["-e", "PICO_BOOTSTRAP_TOOLS=1"])
+
+        return args
+
     def _build_runner(self):
         if self.backend == "docker":
             image = str(self._cfg("sandbox.runtime.docker.image", "picobot-sandbox:latest") or "picobot-sandbox:latest").strip()
@@ -86,6 +136,7 @@ class TerminalToolBase:
             docker_bin = str(self._cfg("sandbox.runtime.docker.docker_bin", "docker") or "docker").strip()
             auto_create = bool(self._cfg("sandbox.runtime.docker.auto_create", True))
             extra_run_args = list(self._cfg("sandbox.runtime.docker.extra_run_args", []) or [])
+            extra_run_args = self._merge_docker_bootstrap_env(extra_run_args, container_workspace_root=container_workspace_root)
 
             return DockerRunner(
                 allowed_bins=self.allowed_bins,
@@ -125,7 +176,6 @@ class TerminalToolBase:
         p = Path(raw).expanduser()
         target = p.resolve() if p.is_absolute() else (self.workspace_root / p).resolve()
 
-        import os
         if os.path.commonpath([str(self.workspace_root), str(target)]) != str(self.workspace_root):
             raise ValueError(f"path outside workspace root: {target}")
 

@@ -51,19 +51,39 @@
   },
 
   "tools": {
-    "base_dir": ".picobot/tools",
-    "bins": {
-      "ytdlp": ".picobot/tools/yt-dlp/bin/yt-dlp",
-      "ffmpeg": ".picobot/tools/ffmpeg/bin/ffmpeg",
-      "whisper_cpp_cli": ".picobot/tools/whisper.cpp/build/bin/whisper-cli",
-      "piper": ".picobot/tools/piper/bin/piper",
-      "arecord": ".picobot/tools/arecord/bin/arecord",
-      "aplay": ".picobot/tools/aplay/bin/aplay"
+    "runtime": {
+      "mode": "docker"
     },
-    "models": {
-      "whisper_cpp": ".picobot/tools/whisper.cpp/models/ggml-small.bin",
-      "piper_it": ".picobot/tools/piper/models/it_IT-paola-medium.onnx",
-      "piper_en": ".picobot/tools/piper/models/en_US-lessac-medium.onnx"
+    "bins": {
+      "ytdlp": "yt-dlp",
+      "ffmpeg": "ffmpeg",
+      "whisper_cpp_cli": "whisper-cli",
+      "piper": "piper",
+      "arecord": "arecord",
+      "aplay": "aplay"
+    },
+    "whisper": {
+      "model": "/opt/picobot/models/whisper/ggml-small.bin"
+    },
+    "piper": {
+      "installed_voices": [
+        "it_IT-paola-medium",
+        "it_IT-aurora-medium",
+        "en_US-lessac-medium",
+        "en_US-amy-medium",
+        "en_US-ryan-high"
+      ],
+      "default_voice_by_lang": {
+        "it": "it_IT-paola-medium",
+        "en": "en_US-lessac-medium"
+      },
+      "models_dir": "/opt/picobot/models/piper",
+      "custom_voice_urls": {
+        "it_IT-aurora-medium": {
+          "onnx": "https://huggingface.co/kirys79/piper_italiano/resolve/main/Aurora/it_IT-aurora-medium.onnx",
+          "json": "https://huggingface.co/kirys79/piper_italiano/resolve/main/Aurora/it_IT-aurora-medium.onnx.json"
+        }
+      }
     },
     "youtube": {
       "enabled": true,
