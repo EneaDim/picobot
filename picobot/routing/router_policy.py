@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import urlparse
 
 from picobot.routing.schemas import RouteCandidate, RouteDecision, SessionRouteContext
 from picobot.runtime_config import cfg_get
@@ -12,9 +13,11 @@ _EXPLICIT_TOOL_RX = re.compile(
 )
 
 _NEWS_COMMAND_RX = re.compile(r"^\s*/news(?:\s+.*)?$", re.IGNORECASE)
-_PY_COMMAND_RX = re.compile(r"^\s*/py(?:thon)?\b", re.IGNORECASE)
-_FILE_COMMAND_RX = re.compile(r"^\s*/file\b", re.IGNORECASE)
-_FETCH_COMMAND_RX = re.compile(r"^\s*/fetch\b", re.IGNORECASE)
+_PY_COMMAND_RX = re.compile(r"^\s*/py(?:thon)?\b(?:\s+(?P<code>.+))?$", re.IGNORECASE | re.DOTALL)
+_FILE_COMMAND_RX = re.compile(r"^\s*/file\b(?:\s+(?P<path>.+))?$", re.IGNORECASE | re.DOTALL)
+_FETCH_COMMAND_RX = re.compile(r"^\s*/fetch\b(?:\s+(?P<target>.+))?$", re.IGNORECASE | re.DOTALL)
+_STT_COMMAND_RX = re.compile(r"^\s*/stt\b(?:\s+(?P<audio_path>.+))?$", re.IGNORECASE | re.DOTALL)
+_TTS_COMMAND_RX = re.compile(r"^\s*/tts\b(?:\s+(?P<text>.+))?$", re.IGNORECASE | re.DOTALL)
 _KB_INGEST_COMMAND_RX = re.compile(r"^\s*/kb\s+ingest\b", re.IGNORECASE)
 _PODCAST_COMMAND_RX = re.compile(r"^\s*/podcast\b", re.IGNORECASE)
 
@@ -43,10 +46,7 @@ _TTS_INTENT_RX = re.compile(
     re.IGNORECASE,
 )
 
-_TTS_QUOTED_RX = re.compile(
-    r'(?:"([^"]+)"|\'([^\']+)\')',
-    re.DOTALL,
-)
+_TTS_QUOTED_RX = re.compile(r"(?:\"([^\"]+)\"|'([^']+)')", re.DOTALL)
 
 _TTS_COLON_RX = re.compile(
     r"\b(?:tts|pronuncia|leggi ad alta voce|leggi questo testo|converti(?: il)? testo in audio|genera audio(?: da)?|trasforma(?: il)? testo in audio)\b\s*:\s*(.+)$",
@@ -104,7 +104,7 @@ _STT_INTENT_RX = re.compile(
 )
 
 _AUDIO_PATH_RX = re.compile(
-    r'(?P<path>(?:[A-Za-z]:[\\/]|/|\.{1,2}/|~?/)?[^\s"\']+\.(?:wav|mp3|m4a|ogg|opus|flac|aac|mp4|mpeg|mpga))',
+    r"(?P<path>(?:[A-Za-z]:[\\/]|/|\.{1,2}/|~?/)?[^\s\"']+\.(?:wav|mp3|m4a|ogg|opus|flac|aac|mp4|mpeg|mpga))",
     re.IGNORECASE,
 )
 
@@ -134,7 +134,6 @@ _TEXT_GEN_RX = re.compile(
     r")\b",
     re.IGNORECASE,
 )
-
 
 _QUESTION_LIKE_RX = re.compile(
     r"^\s*("
@@ -196,7 +195,9 @@ def _extract_explicit_tool(text: str) -> tuple[str, dict] | None:
     return tool_name, data
 
 
-def _candidate_score(candidate: RouteCandidate) -> float:
+def _candidate_score(candidate: RouteCandidate | None) -> float:
+    if candidate is None:
+        return 0.0
     for attr in ("final_score", "score", "combined_score"):
         value = getattr(candidate, attr, None)
         if value is not None:
@@ -324,10 +325,75 @@ def _looks_like_kb_query_request(text: str) -> bool:
     return bool(_KB_QUERY_HINT_RX.search(raw))
 
 
+def _extract_python_slash_args(text: str) -> dict | None:
+    match = _PY_COMMAND_RX.match((text or "").strip())
+    if not match:
+        return None
+    code = _normalize_python_code(match.group("code") or "")
+    return {"code": code} if code else None
+
+
+def _extract_tts_slash_args(text: str) -> dict | None:
+    match = _TTS_COMMAND_RX.match((text or "").strip())
+    if not match:
+        return None
+    payload = _normalize_tts_text(match.group("text") or "")
+    return {"text": payload} if payload else None
+
+
+def _extract_stt_slash_args(text: str) -> dict | None:
+    match = _STT_COMMAND_RX.match((text or "").strip())
+    if not match:
+        return None
+    payload = str(match.group("audio_path") or "").strip()
+    if not payload:
+        return None
+    return {"audio_path": payload}
+
+
+def _extract_file_slash_args(text: str) -> dict | None:
+    match = _FILE_COMMAND_RX.match((text or "").strip())
+    if not match:
+        return None
+    payload = str(match.group("path") or "").strip()
+    if not payload:
+        return None
+    return {"path": payload}
+
+
+def _extract_fetch_slash_args(text: str) -> dict | None:
+    match = _FETCH_COMMAND_RX.match((text or "").strip())
+    if not match:
+        return None
+    payload = str(match.group("target") or "").strip()
+    if not payload:
+        return None
+
+    parsed = urlparse(payload)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return {"operation": "fetch", "url": payload}
+
+    return {"operation": "search", "query": payload}
+
+
+def _best_candidate_by_name(candidates: list[RouteCandidate], name: str) -> RouteCandidate | None:
+    best: RouteCandidate | None = None
+    best_score = -1.0
+    for candidate in candidates:
+        if candidate.record.name != name:
+            continue
+        score = _candidate_score(candidate)
+        if score > best_score:
+            best = candidate
+            best_score = score
+    return best
+
+
 class RouterPolicy:
     def __init__(self) -> None:
         self.accept_threshold = float(cfg_get("router.accept_threshold", 0.52))
         self.margin = float(cfg_get("router.margin", 0.08))
+        self.kb_probe_threshold = float(cfg_get("router.kb_probe_threshold", 0.55))
 
     def _explicit_decision(self, text: str) -> RouteDecision | None:
         raw = text or ""
@@ -366,31 +432,101 @@ class RouterPolicy:
             )
 
         if _PY_COMMAND_RX.match(stripped):
+            py_args = _extract_python_slash_args(stripped)
+            if py_args is None:
+                return RouteDecision(
+                    action="workflow",
+                    name="chat",
+                    reason="explicit /py command missing code payload",
+                    args={},
+                    score=1.0,
+                    candidates=[],
+                )
             return RouteDecision(
                 action="tool",
                 name="python",
                 reason="explicit /py command",
-                args={},
+                args=py_args,
                 score=1.0,
                 candidates=[],
             )
 
         if _FILE_COMMAND_RX.match(stripped):
+            file_args = _extract_file_slash_args(stripped)
+            if file_args is None:
+                return RouteDecision(
+                    action="workflow",
+                    name="chat",
+                    reason="explicit /file command missing path payload",
+                    args={},
+                    score=1.0,
+                    candidates=[],
+                )
             return RouteDecision(
                 action="tool",
                 name="file",
                 reason="explicit /file command",
-                args={},
+                args=file_args,
                 score=1.0,
                 candidates=[],
             )
 
         if _FETCH_COMMAND_RX.match(stripped):
+            fetch_args = _extract_fetch_slash_args(stripped)
+            if fetch_args is None:
+                return RouteDecision(
+                    action="workflow",
+                    name="chat",
+                    reason="explicit /fetch command missing target payload",
+                    args={},
+                    score=1.0,
+                    candidates=[],
+                )
             return RouteDecision(
                 action="tool",
                 name="web",
                 reason="explicit /fetch command",
-                args={},
+                args=fetch_args,
+                score=1.0,
+                candidates=[],
+            )
+
+        if _STT_COMMAND_RX.match(stripped):
+            stt_args = _extract_stt_slash_args(stripped)
+            if stt_args is None:
+                return RouteDecision(
+                    action="workflow",
+                    name="chat",
+                    reason="explicit /stt command missing audio_path payload",
+                    args={},
+                    score=1.0,
+                    candidates=[],
+                )
+            return RouteDecision(
+                action="tool",
+                name="stt",
+                reason="explicit /stt command",
+                args=stt_args,
+                score=1.0,
+                candidates=[],
+            )
+
+        if _TTS_COMMAND_RX.match(stripped):
+            tts_args = _extract_tts_slash_args(stripped)
+            if tts_args is None:
+                return RouteDecision(
+                    action="workflow",
+                    name="chat",
+                    reason="explicit /tts command missing text payload",
+                    args={},
+                    score=1.0,
+                    candidates=[],
+                )
+            return RouteDecision(
+                action="tool",
+                name="tts",
+                reason="explicit /tts command",
+                args=tts_args,
                 score=1.0,
                 candidates=[],
             )
@@ -442,11 +578,12 @@ class RouterPolicy:
             if record.requires_kb and (not ctx.has_kb or not ctx.kb_enabled):
                 continue
 
-            if record.name == "kb_query" and not _looks_like_kb_query_request(user_text):
+            if record.name == "kb_query" and not (
+                _looks_like_kb_query_request(user_text)
+                or (ctx.has_kb and ctx.kb_enabled and _looks_like_kb_question(user_text))
+            ):
                 continue
 
-            # Richieste chiaramente di scrittura/comando/codice:
-            # niente tool arbitrari. Si lascia passare solo python se esplicito.
             if text_generation_request and record.kind == "tool":
                 if record.name == "python" and _looks_like_python_request(user_text):
                     pass
@@ -484,23 +621,20 @@ class RouterPolicy:
             return explicit
 
         filtered = self._apply_constraints(user_text, candidates, ctx)
+        filtered = sorted(filtered, key=_candidate_score, reverse=True)
 
-        if (
-            bool(cfg_get("kb.auto_route_questions", False))
-            and ctx.has_kb
-            and ctx.kb_enabled
-            and _looks_like_kb_question(user_text)
-        ):
-            for candidate in filtered:
-                if candidate.record.name == "kb_query":
-                    return RouteDecision(
-                        action="workflow",
-                        name="kb_query",
-                        reason="kb auto-route question with active kb",
-                        args={},
-                        score=max(_candidate_score(candidate), 1.0),
-                        candidates=filtered,
-                    )
+        if ctx.has_kb and ctx.kb_enabled and _looks_like_kb_question(user_text):
+            kb_candidate = _best_candidate_by_name(filtered, "kb_query")
+            kb_score = _candidate_score(kb_candidate)
+            if kb_candidate is not None and kb_score >= self.kb_probe_threshold:
+                return RouteDecision(
+                    action="workflow",
+                    name="kb_query",
+                    reason=f"active kb question above kb threshold ({kb_score:.3f} >= {self.kb_probe_threshold:.3f})",
+                    args={},
+                    score=kb_score,
+                    candidates=filtered,
+                )
 
         if not filtered:
             return RouteDecision(
@@ -512,7 +646,6 @@ class RouterPolicy:
                 candidates=[],
             )
 
-        filtered = sorted(filtered, key=_candidate_score, reverse=True)
         top1 = filtered[0]
         top2 = filtered[1] if len(filtered) > 1 else None
 

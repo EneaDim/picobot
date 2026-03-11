@@ -9,11 +9,6 @@ from picobot.session.manager import Session
 class RuntimeEventPublisher:
     """
     Boundary dedicato per pubblicare runtime events e outbound messages.
-
-    Obiettivi:
-    - togliere duplicazione da AgentRuntime
-    - centralizzare envelope metadata
-    - costruire i RuntimeHooks per singolo turn
     """
 
     def __init__(self, *, bus: MessageBus) -> None:
@@ -163,6 +158,11 @@ class RuntimeEventPublisher:
                 "route_reason": result.route_reason,
                 "route_score": result.route_score,
                 "route_candidates": result.route_candidates or [],
+                "route_source": result.route_source,
+                "provider_name": result.provider_name,
+                "kb_probe_score": result.kb_probe_score,
+                "kb_name": result.kb_name,
+                "audit": dict(result.audit or {}),
             },
         )
 
@@ -263,7 +263,7 @@ class RuntimeEventPublisher:
         await self.publish_error(
             inbound=inbound,
             session=session,
-            text="Messaggio vuoto.",
+            text="Input vuoto.",
         )
 
     async def publish_turn_outputs(
@@ -273,17 +273,18 @@ class RuntimeEventPublisher:
         session: Session,
         result,
     ) -> None:
-        common_meta = {
-            "action": result.action,
-            "reason": result.reason,
-            "score": result.score,
-            "retrieval_hits": result.retrieval_hits,
-            "route_name": result.route_name,
-            "route_action": result.route_action,
-            "route_reason": result.route_reason,
-            "route_score": result.route_score,
-            "route_candidates": result.route_candidates or [],
-        }
+        text = str(result.content or "").strip()
+        if text:
+            await self.bus.publish(
+                outbound_text(
+                    channel=inbound.channel,
+                    chat_id=inbound.chat_id,
+                    session_id=session.session_id,
+                    text=text,
+                    correlation_id=inbound.correlation_id,
+                    causation_id=inbound.message_id,
+                )
+            )
 
         if result.audio_path:
             await self.bus.publish(
@@ -292,21 +293,8 @@ class RuntimeEventPublisher:
                     chat_id=inbound.chat_id,
                     session_id=session.session_id,
                     audio_path=result.audio_path,
-                    caption="Audio generato",
+                    caption=str(result.content or "").strip() or None,
                     correlation_id=inbound.correlation_id,
                     causation_id=inbound.message_id,
-                    metadata=common_meta,
                 )
             )
-
-        await self.bus.publish(
-            outbound_text(
-                channel=inbound.channel,
-                chat_id=inbound.chat_id,
-                session_id=session.session_id,
-                text=result.content,
-                correlation_id=inbound.correlation_id,
-                causation_id=inbound.message_id,
-                metadata=common_meta,
-            )
-        )

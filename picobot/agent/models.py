@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 StatusCb = Callable[[str], Awaitable[None]]
@@ -35,3 +35,10 @@ class TurnResult:
     route_reason: str | None = None
     route_score: float = 0.0
     route_candidates: list[str] | None = None
+
+    route_source: str | None = None
+    provider_name: str | None = None
+    kb_probe_score: float | None = None
+    kb_name: str | None = None
+
+    audit: dict[str, Any] = field(default_factory=dict)

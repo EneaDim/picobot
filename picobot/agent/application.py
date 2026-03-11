@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from picobot.agent.memory_context_service import MemoryContextService
 from picobot.prompts import detect_language, system_base_context
@@ -12,7 +13,7 @@ from picobot.agent.workflow_dispatcher import WorkflowDispatcher
 from picobot.config.schema import Config
 from picobot.context import ContextBuilder
 from picobot.providers.ollama import OllamaProvider
-from picobot.providers.policy import provider_for_task
+from picobot.providers.policy import resolve_provider
 from picobot.providers.registry import build_provider_registry
 from picobot.session.manager import Session
 from picobot.tools.file import make_file_tool
@@ -45,7 +46,17 @@ class Orchestrator:
         self.cfg = cfg
         self.provider = provider
         self.provider_registry = build_provider_registry(cfg)
+        self.provider_overrides: dict[str, Any] = {}
         self.workspace = Path(workspace).expanduser().resolve()
+
+        self._bind_provider_override(
+            provider_name=str(self.cfg.llm.default_provider or "ollama"),
+            provider=provider,
+        )
+        self._bind_provider_override(
+            provider_name="ollama",
+            provider=provider,
+        )
         self.docs_root = self.workspace / "docs"
         self.docs_root.mkdir(parents=True, exist_ok=True)
 
@@ -61,6 +72,20 @@ class Orchestrator:
         self.memory_context_service = MemoryContextService(self)
         self.workflow_dispatcher = WorkflowDispatcher(self)
         self.turn_processor = TurnProcessor(self)
+
+    def _bind_provider_override(self, *, provider_name: str, provider: Any) -> None:
+        name = str(provider_name or "").strip()
+        if not name or provider is None:
+            return
+        self.provider_overrides[name] = provider
+
+    def resolve_provider(self, task_name: str):
+        return resolve_provider(
+            self.cfg,
+            self.provider_registry,
+            task_name,
+            overrides=self.provider_overrides,
+        )
 
     async def _emit_hook(self, hook: HookCb | None, payload: dict) -> None:
         if hook is None:
@@ -83,7 +108,7 @@ class Orchestrator:
                 f"Please summarize the YouTube video transcript below in a structured way.\n\n"
                 f"Transcript:\n{transcript[:120000]}"
             )
-            task_provider = provider_for_task(self.cfg, self.provider_registry, "summary")
+            task_provider = self.resolve_provider("summary")
             resp = await task_provider.chat(
                 messages=[
                     {"role": "system", "content": sys_prompt},

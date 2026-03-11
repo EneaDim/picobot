@@ -6,7 +6,7 @@ from pathlib import Path
 
 from picobot.prompts import detect_language
 from picobot.routing.router_service import RouterService
-from picobot.routing.schemas import RouteDecision, SessionRouteContext
+from picobot.routing.schemas import RouteCandidate, RouteDecision, SessionRouteContext
 
 _router: RouterService | None = None
 
@@ -64,6 +64,41 @@ def _session_ctx_from_state_file(state_file: Path, input_lang: str) -> SessionRo
     )
 
 
+def _candidate_to_payload(candidate: RouteCandidate) -> dict:
+    return {
+        "id": candidate.record.id,
+        "kind": candidate.record.kind,
+        "name": candidate.record.name,
+        "title": candidate.record.title,
+        "score": float(candidate.final_score),
+        "vector_score": float(candidate.vector_score),
+        "lexical_score": float(candidate.lexical_score),
+        "rerank_score": float(candidate.rerank_score),
+        "reason": candidate.reason,
+        "requires_kb": bool(candidate.record.requires_kb),
+        "requires_network": bool(candidate.record.requires_network),
+        "enabled": bool(candidate.record.enabled),
+        "priority": int(candidate.record.priority),
+    }
+
+
+def _decision_to_payload(decision: RouteDecision, ctx: SessionRouteContext) -> dict:
+    return {
+        "action": decision.action,
+        "name": decision.name,
+        "reason": decision.reason,
+        "args": dict(decision.args or {}),
+        "score": float(decision.score),
+        "context": {
+            "kb_name": ctx.kb_name,
+            "kb_enabled": bool(ctx.kb_enabled),
+            "has_kb": bool(ctx.has_kb),
+            "input_lang": ctx.input_lang,
+        },
+        "candidates": [_candidate_to_payload(c) for c in (decision.candidates or [])],
+    }
+
+
 def deterministic_route(
     user_text: str,
     state_file: Path,
@@ -83,4 +118,6 @@ def route_json_one_line(
     lang = detect_language((user_text or "").strip(), default=default_language)
     ctx = _session_ctx_from_state_file(state_file, lang)
     router = _get_router()
-    return router.route_json_one_line(user_text, ctx)
+    decision = router.route(user_text, ctx)
+    payload = _decision_to_payload(decision, ctx)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))

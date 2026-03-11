@@ -14,7 +14,7 @@ class TurnProcessor:
     - route selection
     - dispatch tool/workflow
     - emissione hook turn-level
-    - arricchimento TurnResult con route metadata
+    - arricchimento TurnResult con route/audit metadata
 
     La persistenza memoria e il context assembly stanno in MemoryContextService.
     """
@@ -45,6 +45,7 @@ class TurnProcessor:
             user_text=text,
         )
         decision = route.raw_decision
+        kb_name = str(session.get_state().get("kb_name") or self.orchestrator.cfg.default_kb_name or "default").strip()
 
         await self._emit_hook(
             getattr(hooks, "on_route_selected", None),
@@ -54,13 +55,16 @@ class TurnProcessor:
                 "route_reason": route.route_reason,
                 "route_score": route.route_score,
                 "route_candidates": route.route_candidates,
+                "route_source": route.route_source,
+                "kb_probe_score": route.kb_probe_score,
                 "lang": route.lang,
             },
         )
 
         if status:
             route_label = f"{route.route_action or '?'}:{route.route_name or '?'}"
-            await status(f"🧭 Route scelta: {route_label}")
+            route_source = route.route_source or "unknown"
+            await status(f"🧭 Route scelta: {route_label} [{route_source}]")
 
         if route.route_action == "tool":
             result = await self.orchestrator.workflow_dispatcher.explicit_tool(
@@ -107,6 +111,19 @@ class TurnProcessor:
         result.route_reason = route.route_reason
         result.route_score = route.route_score
         result.route_candidates = route.route_candidates
+        result.route_source = route.route_source
+        result.kb_probe_score = route.kb_probe_score
+        result.kb_name = kb_name
+
+        audit = dict(result.audit or {})
+        audit.setdefault("route_name", route.route_name)
+        audit.setdefault("route_action", route.route_action)
+        audit.setdefault("route_reason", route.route_reason)
+        audit.setdefault("route_score", route.route_score)
+        audit.setdefault("route_source", route.route_source)
+        audit.setdefault("kb_probe_score", route.kb_probe_score)
+        audit.setdefault("kb_name", kb_name)
+        result.audit = audit
 
         return TurnResult(
             content=result.content,
@@ -121,4 +138,9 @@ class TurnProcessor:
             route_reason=result.route_reason,
             route_score=result.route_score,
             route_candidates=result.route_candidates,
+            route_source=result.route_source,
+            provider_name=result.provider_name,
+            kb_probe_score=result.kb_probe_score,
+            kb_name=result.kb_name,
+            audit=dict(result.audit or {}),
         )

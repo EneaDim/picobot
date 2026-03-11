@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import picobot.ui.command_helpers as command_helpers
+from picobot.routing.deterministic import route_json_one_line
 from picobot.ui.command_catalog import HELP_TEXT
 
 # Backward-compatible re-exports for older tests/monkeypatch paths.
@@ -10,9 +11,64 @@ from picobot.retrieval.ingest import ingest_kb  # noqa: F401
 from picobot.retrieval.query import query_kb  # noqa: F401
 from picobot.ui.command_handlers_kb import dispatch_kb_command
 from picobot.ui.command_handlers_mem import dispatch_mem_command
-from picobot.ui.command_handlers_shortcuts import dispatch_shortcut_command
 from picobot.ui.command_helpers import active_kb_name, list_registered_tools, load_session
 from picobot.ui.command_models import CommandResult
+
+
+_LOCAL_ONLY_COMMANDS = {
+    "/help",
+    "/status",
+    "/tools",
+    "/mem",
+    "/mem tail",
+    "/mem summary",
+    "/mem facts",
+    "/mem clean",
+    "/kb",
+    "/kb list",
+}
+
+_LOCAL_PREFIXES = (
+    "/kb use ",
+    "/kb ingest ",
+    "/kb query ",
+    "/route ",
+)
+
+_PASSTHROUGH_PREFIXES = (
+    "/news",
+    "/yt",
+    "/python",
+    "/py",
+    "/tts",
+    "/fetch",
+    "/file",
+    "/stt",
+    "/podcast",
+)
+
+
+def _is_local_command(text: str) -> bool:
+    if text in _LOCAL_ONLY_COMMANDS:
+        return True
+    return any(text.startswith(prefix) for prefix in _LOCAL_PREFIXES)
+
+
+def _is_passthrough_command(text: str) -> bool:
+    return any(text == prefix or text.startswith(prefix + " ") for prefix in _PASSTHROUGH_PREFIXES)
+
+
+def _handle_route_command(*, text: str, session, default_language: str) -> CommandResult:
+    arg = text[len("/route "):].strip()
+    if not arg:
+        return CommandResult(handled=True, text="Uso: /route <testo>")
+
+    payload = route_json_one_line(
+        user_text=arg,
+        state_file=session.state_file,
+        default_language=default_language,
+    )
+    return CommandResult(handled=True, text=payload)
 
 
 def handle_local_command(
@@ -60,6 +116,16 @@ def handle_local_command(
             return CommandResult(handled=True, text="Tool registry non disponibile.")
         return CommandResult(handled=True, text=list_registered_tools(orchestrator))
 
+    if text.startswith("/route "):
+        return _handle_route_command(
+            text=text,
+            session=session,
+            default_language=getattr(cfg, "default_language", "it"),
+        )
+
+    if text == "/route":
+        return CommandResult(handled=True, text="Uso: /route <testo>")
+
     result = dispatch_mem_command(
         text=text,
         cfg=cfg,
@@ -78,11 +144,18 @@ def handle_local_command(
     if result is not None:
         return result
 
-    result = dispatch_shortcut_command(text=text)
-    if result is not None:
-        return result
+    if _is_passthrough_command(text):
+        return CommandResult(handled=True, bus_text=text)
 
-    return CommandResult(handled=True, text=f"Comando sconosciuto: {text}\nUsa /help")
+    if _is_local_command(text):
+        return CommandResult(handled=True, text=f"Comando locale non supportato: {text}")
+
+    # Forward di default per mantenere la CLI quasi paritetica con Telegram.
+    return CommandResult(
+        handled=True,
+        bus_text=text,
+        text=None,
+    )
 
 
 def handle_command(

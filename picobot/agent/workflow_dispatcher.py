@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 from picobot.agent.models import RuntimeHooks, StatusCb, TurnResult
 from picobot.prompts import kb_user_prompt
 from picobot.providers.ollama import OllamaProviderError, OllamaTimeout
-from picobot.providers.policy import provider_for_task
 from picobot.session.manager import Session
 from picobot.tools.base import ToolError
 from picobot.tools.news_digest import NewsDigestArgs
@@ -25,6 +24,17 @@ def _first_youtube_url(text: str) -> str | None:
     if not match:
         return None
     return match.group(1).strip()
+
+
+def _provider_name(provider: Any) -> str | None:
+    name = getattr(provider, "name", None)
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+
+    cls_name = provider.__class__.__name__
+    if cls_name.endswith("Provider"):
+        cls_name = cls_name[:-8]
+    return cls_name.lower() if cls_name else None
 
 
 class WorkflowDispatcher:
@@ -49,10 +59,6 @@ class WorkflowDispatcher:
         hooks: RuntimeHooks | None = None,
         workflow_name: str | None = None,
     ) -> dict:
-        """
-        Passa dal seam compatibile dell'orchestrator così i test che
-        monkeypatchano _run_tool(tool_name, args) continuano a funzionare.
-        """
         return await self.orchestrator._call_tool(
             tool_name,
             args,
@@ -81,18 +87,21 @@ class WorkflowDispatcher:
                 content=(f"Tool sconosciuto: {tool_name}" if lang == "it" else f"Unknown tool: {tool_name}"),
                 action="tool",
                 reason="unknown tool",
+                audit={"tool_name": tool_name},
             )
         except ToolError as e:
             return TurnResult(
                 content=(f"Errore tool: {e}" if lang == "it" else f"Tool error: {e}"),
                 action="tool",
                 reason="tool validation error",
+                audit={"tool_name": tool_name},
             )
         except Exception as e:
             return TurnResult(
                 content=(f"Errore durante l'esecuzione del tool: {e}" if lang == "it" else f"Tool execution error: {e}"),
                 action="tool",
                 reason="tool execution error",
+                audit={"tool_name": tool_name},
             )
 
         if not isinstance(result, dict):
@@ -100,6 +109,7 @@ class WorkflowDispatcher:
                 content=(f"Risposta tool non valida da {tool_name}" if lang == "it" else f"Invalid tool response from {tool_name}"),
                 action="tool",
                 reason="invalid tool response",
+                audit={"tool_name": tool_name},
             )
 
         if not result.get("ok"):
@@ -108,6 +118,7 @@ class WorkflowDispatcher:
                 content=(f"Tool fallito: {err}" if lang == "it" else f"Tool failed: {err}"),
                 action="tool",
                 reason="tool returned error",
+                audit={"tool_name": tool_name},
             )
 
         data = result.get("data") or {}
@@ -121,6 +132,7 @@ class WorkflowDispatcher:
             action="tool",
             reason=f"tool:{tool_name}",
             audio_path=audio_path,
+            audit={"tool_name": tool_name, "tool_ok": True},
         )
 
     async def chat(
@@ -157,13 +169,10 @@ class WorkflowDispatcher:
         )
 
         messages = assembly.model_context.to_messages(user_text=user_text)
+        task_provider = self.orchestrator.resolve_provider("chat")
+        provider_name = _provider_name(task_provider)
 
         try:
-            task_provider = provider_for_task(
-                self.orchestrator.cfg,
-                self.orchestrator.provider_registry,
-                "chat",
-            )
             resp = await task_provider.chat(
                 messages=messages,
                 tools=None,
@@ -175,16 +184,26 @@ class WorkflowDispatcher:
                 content=("⏱️ Il modello locale non ha risposto in tempo." if lang == "it" else "⏱️ The local model timed out."),
                 action="chat",
                 reason="ollama timeout",
+                provider_name=provider_name,
+                audit={"workflow_name": "chat", "provider_name": provider_name},
             )
         except OllamaProviderError as e:
             return TurnResult(
                 content=(f"⚠️ Errore Ollama: {e}" if lang == "it" else f"⚠️ Ollama error: {e}"),
                 action="chat",
                 reason="ollama error",
+                provider_name=provider_name,
+                audit={"workflow_name": "chat", "provider_name": provider_name},
             )
 
         content = (resp.content or "").strip() or ("Nessuna risposta." if lang == "it" else "No response.")
-        return TurnResult(content=content, action="chat", reason="chat")
+        return TurnResult(
+            content=content,
+            action="chat",
+            reason="chat",
+            provider_name=provider_name,
+            audit={"workflow_name": "chat", "provider_name": provider_name},
+        )
 
     async def kb_query(
         self,
@@ -233,6 +252,8 @@ class WorkflowDispatcher:
                 content=(f"Errore retrieval: {e}" if lang == "it" else f"Retrieval error: {e}"),
                 action="workflow",
                 reason="kb tool execution error",
+                kb_name=kb_name,
+                audit={"workflow_name": "kb_query", "kb_name": kb_name},
             )
 
         if not tool_res.get("ok"):
@@ -252,6 +273,8 @@ class WorkflowDispatcher:
                 content=(f"KB query fallita: {err}" if lang == "it" else f"KB query failed: {err}"),
                 action="workflow",
                 reason="kb query failed",
+                kb_name=kb_name,
+                audit={"workflow_name": "kb_query", "kb_name": kb_name},
             )
 
         data = tool_res.get("data") or {}
@@ -276,6 +299,8 @@ class WorkflowDispatcher:
                 action="workflow",
                 reason="kb no hits",
                 retrieval_hits=0,
+                kb_name=kb_name,
+                audit={"workflow_name": "kb_query", "kb_name": kb_name, "retrieval_hits": 0},
             )
 
         if status:
@@ -308,12 +333,10 @@ class WorkflowDispatcher:
             user_text=kb_user_prompt(lang=lang, question=user_text, context=context)
         )
 
+        task_provider = self.orchestrator.resolve_provider("qa")
+        provider_name = _provider_name(task_provider)
+
         try:
-            task_provider = provider_for_task(
-                self.orchestrator.cfg,
-                self.orchestrator.provider_registry,
-                "qa",
-            )
             resp = await task_provider.chat(
                 messages=messages,
                 tools=None,
@@ -326,6 +349,9 @@ class WorkflowDispatcher:
                 action="workflow",
                 reason="kb ollama timeout",
                 retrieval_hits=hits,
+                provider_name=provider_name,
+                kb_name=kb_name,
+                audit={"workflow_name": "kb_query", "provider_name": provider_name, "kb_name": kb_name, "retrieval_hits": hits},
             )
         except OllamaProviderError as e:
             return TurnResult(
@@ -333,6 +359,9 @@ class WorkflowDispatcher:
                 action="workflow",
                 reason="kb ollama error",
                 retrieval_hits=hits,
+                provider_name=provider_name,
+                kb_name=kb_name,
+                audit={"workflow_name": "kb_query", "provider_name": provider_name, "kb_name": kb_name, "retrieval_hits": hits},
             )
 
         return TurnResult(
@@ -340,6 +369,9 @@ class WorkflowDispatcher:
             action="workflow",
             reason="kb_query",
             retrieval_hits=hits,
+            provider_name=provider_name,
+            kb_name=kb_name,
+            audit={"workflow_name": "kb_query", "provider_name": provider_name, "kb_name": kb_name, "retrieval_hits": hits},
         )
 
     async def news_digest(
@@ -371,6 +403,7 @@ class WorkflowDispatcher:
                 content=(f"Errore news digest: {e}" if lang == "it" else f"News digest error: {e}"),
                 action="workflow",
                 reason="news tool exception",
+                audit={"workflow_name": "news_digest", "query": query},
             )
 
         if not result.get("ok"):
@@ -379,6 +412,7 @@ class WorkflowDispatcher:
                 content=(f"News digest fallito: {err}" if lang == "it" else f"News digest failed: {err}"),
                 action="workflow",
                 reason="news tool failed",
+                audit={"workflow_name": "news_digest", "query": query},
             )
 
         data = result.get("data") or {}
@@ -388,6 +422,7 @@ class WorkflowDispatcher:
                 content=("Non ho trovato fonti abbastanza buone per costruire una rassegna." if lang == "it" else "I could not find enough good sources to build a digest."),
                 action="workflow",
                 reason="news no items",
+                audit={"workflow_name": "news_digest", "query": query},
             )
 
         lines: list[str] = [f"📰 News digest — {query}", ""]
@@ -402,7 +437,12 @@ class WorkflowDispatcher:
                 lines.append(f"   {url}")
             lines.append("")
 
-        return TurnResult(content="\n".join(lines).strip(), action="workflow", reason="news_digest")
+        return TurnResult(
+            content="\n".join(lines).strip(),
+            action="workflow",
+            reason="news_digest",
+            audit={"workflow_name": "news_digest", "query": query, "items": len(items)},
+        )
 
     async def youtube_summarizer(
         self,
@@ -418,6 +458,7 @@ class WorkflowDispatcher:
                 content=("Non trovo un URL YouTube valido." if lang == "it" else "I cannot find a valid YouTube URL."),
                 action="workflow",
                 reason="youtube url missing",
+                audit={"workflow_name": "youtube_summarizer"},
             )
 
         if status:
@@ -442,6 +483,7 @@ class WorkflowDispatcher:
                 content=(f"Errore YouTube summary: {e}" if lang == "it" else f"YouTube summary error: {e}"),
                 action="workflow",
                 reason="youtube tool exception",
+                audit={"workflow_name": "youtube_summarizer", "url": url},
             )
 
         if not result.get("ok"):
@@ -450,6 +492,7 @@ class WorkflowDispatcher:
                 content=(f"Riassunto YouTube fallito: {err}" if lang == "it" else f"YouTube summary failed: {err}"),
                 action="workflow",
                 reason="youtube tool failed",
+                audit={"workflow_name": "youtube_summarizer", "url": url},
             )
 
         data = result.get("data") or {}
@@ -459,6 +502,7 @@ class WorkflowDispatcher:
             content=summary or ("Nessun riassunto disponibile." if lang == "it" else "No summary available."),
             action="workflow",
             reason="youtube_summarizer",
+            audit={"workflow_name": "youtube_summarizer", "url": url},
         )
 
     async def podcast(
@@ -488,14 +532,13 @@ class WorkflowDispatcher:
         if status:
             await status("🎙️ Sto generando il podcast…")
 
+        task_provider = self.orchestrator.resolve_provider("podcast_writer")
+        provider_name = _provider_name(task_provider)
+
         try:
             result = await generate_podcast(
                 self.orchestrator.cfg,
-                provider_for_task(
-                    self.orchestrator.cfg,
-                    self.orchestrator.provider_registry,
-                    "podcast_writer",
-                ),
+                task_provider,
                 topic=topic,
                 lang=lang,
                 status=status,
@@ -505,6 +548,8 @@ class WorkflowDispatcher:
                 content=(f"Errore podcast: {e}" if lang == "it" else f"Podcast error: {e}"),
                 action="workflow",
                 reason="podcast generation error",
+                provider_name=provider_name,
+                audit={"workflow_name": "podcast", "provider_name": provider_name, "topic": topic},
             )
 
         self.orchestrator.memory_context_service.store_audio_state(session, result.audio_path)
@@ -521,6 +566,8 @@ class WorkflowDispatcher:
             reason="podcast",
             audio_path=result.audio_path,
             script=result.script,
+            provider_name=provider_name,
+            audit={"workflow_name": "podcast", "provider_name": provider_name, "topic": topic},
         )
 
     async def dispatch(
@@ -549,9 +596,11 @@ class WorkflowDispatcher:
                 content=("L’ingest PDF va avviato da comando esplicito (/kb ingest ... oppure caricando un PDF su Telegram)." if lang == "it" else "PDF ingest must be started via an explicit command (/kb ingest ...) or by uploading a PDF on Telegram."),
                 action="workflow",
                 reason="kb ingest is command-managed",
+                audit={"workflow_name": "kb_ingest_pdf"},
             )
         return TurnResult(
             content=(f"Workflow non supportato: {name}" if lang == "it" else f"Unsupported workflow: {name}"),
             action="workflow",
             reason="unknown workflow",
+            audit={"workflow_name": name or "unknown"},
         )

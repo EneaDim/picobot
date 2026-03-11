@@ -15,6 +15,7 @@ COMMAND_SPECS: list[CommandSpec] = [
     CommandSpec("/quit", "Esce"),
     CommandSpec("/status", "Stato runtime"),
     CommandSpec("/tools", "Lista tool registrati"),
+    CommandSpec("/route <testo>", "Mostra la route deterministica senza eseguire il turno"),
     CommandSpec("/mem", "Mostra session state"),
     CommandSpec("/mem tail", "Mostra history"),
     CommandSpec("/mem summary", "Mostra summary"),
@@ -24,11 +25,16 @@ COMMAND_SPECS: list[CommandSpec] = [
     CommandSpec("/kb list", "Lista KB"),
     CommandSpec("/kb use <name>", "Seleziona KB"),
     CommandSpec("/kb ingest <path>", "Ingest PDF nella KB"),
-    CommandSpec("/kb query <testo>", "Query locale nella KB"),
-    CommandSpec("/news <query>", "Shortcut news digest"),
-    CommandSpec("/yt <url>", "Shortcut YouTube summary"),
-    CommandSpec("/python <code>", "Shortcut python"),
-    CommandSpec("/tts <testo>", "Shortcut TTS"),
+    CommandSpec("/kb query <testo>", "Query locale raw e deterministica nella KB"),
+    CommandSpec("/news <query>", "Pass-through al runtime per news digest"),
+    CommandSpec("/yt <url>", "Pass-through al runtime per YouTube summary"),
+    CommandSpec("/python <code>", "Pass-through al runtime per tool python"),
+    CommandSpec("/py <code>", "Alias breve di /python"),
+    CommandSpec("/tts <testo>", "Pass-through al runtime per TTS"),
+    CommandSpec("/fetch <url|query>", "Pass-through al runtime per web tool"),
+    CommandSpec("/file <path>", "Pass-through al runtime per file tool"),
+    CommandSpec("/stt <audio_path>", "Pass-through al runtime per STT"),
+    CommandSpec("/podcast <topic>", "Pass-through al runtime per podcast"),
 ]
 
 
@@ -38,13 +44,28 @@ def command_words() -> list[str]:
 
 def build_help_text() -> str:
     sections = {
-        "Sistema": ["/help", "/exit", "/quit", "/status", "/tools"],
+        "Sistema": ["/help", "/exit", "/quit", "/status", "/tools", "/route <testo>"],
         "Memoria": ["/mem", "/mem tail", "/mem summary", "/mem facts", "/mem clean"],
         "KB": ["/kb", "/kb list", "/kb use <name>", "/kb ingest <path>", "/kb query <testo>"],
-        "Shortcut": ["/news <query>", "/yt <url>", "/python <code>", "/tts <testo>"],
+        "Pass-through runtime": [
+            "/news <query>",
+            "/yt <url>",
+            "/python <code>",
+            "/py <code>",
+            "/tts <testo>",
+            "/fetch <url|query>",
+            "/file <path>",
+            "/stt <audio_path>",
+            "/podcast <topic>",
+        ],
     }
 
-    lines = ["Comandi disponibili", ""]
+    lines = [
+        "Comandi disponibili",
+        "",
+        "Nota: /kb query resta locale e deterministico; le domande naturali con KB attiva passano invece dal runtime/router.",
+        "",
+    ]
 
     for title, commands in sections.items():
         lines.append(title)

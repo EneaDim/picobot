@@ -35,6 +35,10 @@ except Exception:
     TELEGRAM_AVAILABLE = False
 
 
+def _normalize_inbound_text(text: str) -> str:
+    return " ".join((text or "").strip().split())
+
+
 class TelegramChannel(Channel):
     """
     Telegram channel adapter bus-aware.
@@ -44,6 +48,11 @@ class TelegramChannel(Channel):
     - inbound voice_note
     - inbound document
     - outbound text / status / error / audio
+
+    Nota:
+    gli slash command non vengono interpretati nel channel;
+    vengono inoltrati come testo al runtime, così la surface resta
+    quasi paritetica con la CLI.
     """
 
     def __init__(
@@ -84,7 +93,7 @@ class TelegramChannel(Channel):
 
         app = Application.builder().token(self.token).build()
         app.add_handler(CommandHandler("start", self._on_start))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text_message))
+        app.add_handler(MessageHandler(filters.TEXT, self._on_text_message))
         app.add_handler(MessageHandler(filters.VOICE, self._on_voice_message))
         app.add_handler(MessageHandler(filters.Document.ALL, self._on_document_message))
 
@@ -124,7 +133,7 @@ class TelegramChannel(Channel):
             channel=self.name,
             chat_id=str(chat_id),
             session_id=session_id,
-            text=text,
+            text=_normalize_inbound_text(text),
             metadata={
                 "telegram_user_id": str(user_id) if user_id is not None else "",
                 "telegram_username": username or "",
@@ -138,7 +147,7 @@ class TelegramChannel(Channel):
             return
 
         await update.effective_message.reply_text(
-            "Ciao! 👋 Sono collegato al runtime di picobot. Scrivimi un messaggio, invia un vocale o un PDF."
+            "Ciao! 👋 Sono collegato al runtime di picobot. Puoi scrivermi testo libero, slash command, inviare un vocale o un PDF."
         )
 
     async def _on_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -149,7 +158,7 @@ class TelegramChannel(Channel):
         if not message or not chat:
             return
 
-        text = (message.text or "").strip()
+        text = _normalize_inbound_text(message.text or "")
         if not text:
             return
 
@@ -259,6 +268,5 @@ class TelegramChannel(Channel):
                     )
                 return
 
-            logger.debug("Telegram outbound ignored for type=%s", mtype)
         except Exception:
-            logger.exception("Telegram outbound delivery failed")
+            logger.exception("Telegram outbound failed")

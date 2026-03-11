@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from picobot.config.schema import Config
 from picobot.providers.registry import ProviderRegistry
 
@@ -30,5 +33,32 @@ def provider_name_for_task(cfg: Config, task_name: str) -> str:
 def provider_for_task(cfg: Config, registry: ProviderRegistry, task_name: str):
     name = provider_name_for_task(cfg, task_name)
     if not registry.has(name):
-        raise ProviderPolicyError(f"provider '{name}' configured for task '{task_name}' but not registered")
+        raise ProviderPolicyError(
+            f"provider '{name}' configured for task '{task_name}' but not registered"
+        )
     return registry.get(name)
+
+
+def resolve_provider(
+    cfg: Config,
+    registry: ProviderRegistry,
+    task_name: str,
+    *,
+    overrides: Mapping[str, Any] | None = None,
+):
+    """
+    Risolve il provider per task mantenendo il vero routing task -> provider,
+    ma consentendo override espliciti per provider name.
+
+    Questo chiude il seam fra:
+    - provider registry configurato
+    - provider injectato nei test / runtime
+    """
+    provider_name = provider_name_for_task(cfg, task_name)
+
+    if overrides:
+        override = overrides.get(provider_name)
+        if override is not None:
+            return override
+
+    return provider_for_task(cfg, registry, task_name)

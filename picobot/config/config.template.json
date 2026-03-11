@@ -84,13 +84,19 @@
       "enabled": true,
       "timeout_s": 180,
       "ytdlp_args": [
-        "--js-runtimes",
-        "node:/usr/bin/node"
+        "--user-agent",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+        "--extractor-args",
+        "youtube:player_client=android,web"
       ],
       "prefer_sub_langs": [
-        "it",
         "en"
       ]
+    },
+    "models": {
+      "piper_it": "/opt/picobot/models/piper/it_IT-paola-medium.onnx",
+      "piper_en": "/opt/picobot/models/piper/en_US-lessac-medium.onnx",
+      "whisper_cpp": "/opt/picobot/models/whisper/ggml-small.bin"
     }
   },
   "sandbox": {
