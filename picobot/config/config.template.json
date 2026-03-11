@@ -1,15 +1,12 @@
 {
   "workspace": ".picobot/workspace",
-
   "language": {
     "default": "it"
   },
-
   "kb": {
     "default_name": "default",
-    "auto_route_questions": false
+    "auto_route_questions": true
   },
-
   "ollama": {
     "base_url": "http://localhost:11434",
     "model": "qwen2.5:3b-instruct-q4_0",
@@ -17,12 +14,10 @@
     "max_tokens": 1200,
     "podcast_max_tokens": 1800
   },
-
   "memory_limits": {
     "max_history_lines": 300,
     "tail_lines": 900
   },
-
   "summary": {
     "mode": "single",
     "max_chars": 24000,
@@ -31,7 +26,6 @@
     "timeout_s": 600,
     "output_language": "auto"
   },
-
   "retrieval": {
     "enabled": true,
     "provider": "qdrant",
@@ -51,7 +45,6 @@
       "trace-fst": 0.2
     }
   },
-
   "tools": {
     "runtime": {
       "mode": "docker"
@@ -100,7 +93,6 @@
       ]
     }
   },
-
   "sandbox": {
     "runtime": {
       "backend": "docker",
@@ -161,7 +153,6 @@
       ]
     }
   },
-
   "web_search": {
     "enabled": true,
     "backend": "searxng",
@@ -175,13 +166,11 @@
     "docker_service_name": "searxng",
     "auto_restart_on_failure": true
   },
-
   "ui": {
     "use_emojis": true,
     "use_prompt_toolkit": true,
     "vi_mode": false
   },
-
   "telegram": {
     "enabled": false,
     "bot_token": "YOUR_BOT_TOKEN",
@@ -194,7 +183,6 @@
     "max_voice_seconds": 240,
     "debug_terminal": true
   },
-
   "podcast": {
     "enabled": true,
     "tts_backend": "piper",
@@ -233,31 +221,26 @@
       }
     }
   },
-
   "debug": {
     "enabled": true
   },
-
   "qdrant": {
     "path": ".picobot/qdrant",
     "router_collection": "router_index",
     "docs_collection": "docs_index"
   },
-
   "vector": {
     "provider": "ollama",
     "base_url": "http://localhost:11434",
     "embed_model": "nomic-embed-text",
     "timeout_s": 60
   },
-
   "embeddings": {
     "provider": "ollama",
     "model": "nomic-embed-text",
     "batch_size": 16,
     "enabled": true
   },
-
   "router": {
     "enabled": true,
     "top_k": 5,
@@ -275,6 +258,35 @@
       "enabled": false,
       "provider": "none",
       "model": ""
+    }
+  },
+  "llm": {
+    "default_provider": "ollama",
+    "tasks": {
+      "chat": "ollama",
+      "router": "ollama",
+      "summary": "ollama",
+      "podcast_writer": "ollama",
+      "podcast_research": "ollama",
+      "qa": "ollama"
+    },
+    "providers": {
+      "ollama": {
+        "enabled": true,
+        "kind": "ollama",
+        "base_url": "http://localhost:11434",
+        "model": "qwen2.5:3b-instruct-q4_0",
+        "timeout_s": 600,
+        "max_tokens": 1200
+      },
+      "gemini": {
+        "enabled": false,
+        "kind": "gemini",
+        "api_key_env": "GEMINI_API_KEY",
+        "model": "gemini-2.5-flash",
+        "timeout_s": 600,
+        "max_tokens": 1800
+      }
     }
   }
 }

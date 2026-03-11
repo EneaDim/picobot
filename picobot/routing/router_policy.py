@@ -135,6 +135,32 @@ _TEXT_GEN_RX = re.compile(
     re.IGNORECASE,
 )
 
+
+_QUESTION_LIKE_RX = re.compile(
+    r"^\s*("
+    r"chi\b|"
+    r"che\b|"
+    r"cosa\b|"
+    r"qual\b|"
+    r"quale\b|"
+    r"quali\b|"
+    r"quando\b|"
+    r"dove\b|"
+    r"come\b|"
+    r"perché\b|"
+    r"perche\b|"
+    r"in quale\b|"
+    r"come si chiama\b|"
+    r"what\b|"
+    r"which\b|"
+    r"where\b|"
+    r"when\b|"
+    r"why\b|"
+    r"how\b"
+    r")",
+    re.IGNORECASE,
+)
+
 _KB_QUERY_HINT_RX = re.compile(
     r"\b("
     r"kb|"
@@ -282,6 +308,15 @@ def _looks_like_text_generation_request(text: str) -> bool:
     return bool(_TEXT_GEN_RX.search(raw))
 
 
+def _looks_like_kb_question(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if "?" in raw:
+        return True
+    return bool(_QUESTION_LIKE_RX.search(raw))
+
+
 def _looks_like_kb_query_request(text: str) -> bool:
     raw = (text or "").strip()
     if not raw:
@@ -424,6 +459,9 @@ class RouterPolicy:
             if record.name == "python" and not _looks_like_python_request(user_text):
                 continue
 
+            if record.name == "youtube_summarizer" and not _YT_RX.search(user_text or ""):
+                continue
+
             if record.name == "stt":
                 if not _looks_like_stt_request(user_text):
                     continue
@@ -446,6 +484,23 @@ class RouterPolicy:
             return explicit
 
         filtered = self._apply_constraints(user_text, candidates, ctx)
+
+        if (
+            bool(cfg_get("kb.auto_route_questions", False))
+            and ctx.has_kb
+            and ctx.kb_enabled
+            and _looks_like_kb_question(user_text)
+        ):
+            for candidate in filtered:
+                if candidate.record.name == "kb_query":
+                    return RouteDecision(
+                        action="workflow",
+                        name="kb_query",
+                        reason="kb auto-route question with active kb",
+                        args={},
+                        score=max(_candidate_score(candidate), 1.0),
+                        candidates=filtered,
+                    )
 
         if not filtered:
             return RouteDecision(

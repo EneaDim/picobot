@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-
-import os
-
 import json
+import os
+import shlex
 from typing import Awaitable, Callable
 
 from pydantic import BaseModel, Field
@@ -28,14 +27,9 @@ class YTSummaryArgs(BaseModel):
     prefer_sub_langs: list[str] = Field(default_factory=list)
     timeout_s: int = Field(default=180, ge=5, le=1200)
 
-DEBUG_DOCKER = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _debug_docker(msg: str) -> None:
-    if DEBUG_DOCKER:
-        print(f"[debug][docker] {msg}")
 
 DEBUG_YT = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _debug_yt(msg: str) -> None:
     if DEBUG_YT:
@@ -51,29 +45,90 @@ def _normalize_ytdlp_bin(ytdlp_bin: str) -> str:
     return resolve_repo_path(value)
 
 
-def _extract_transcript_with_ytdlp_cmd(url: str, prefer_sub_langs: list[str]) -> list[str]:
-    langs = ",".join([x.strip() for x in prefer_sub_langs if str(x).strip()]) or "it,en.*"
-    return [
-        "--skip-download",
-        "--write-auto-sub",
-        "--write-sub",
-        "--sub-lang", langs,
-        "--sub-format", "vtt",
-        "--print", "after_move:subtitle:%(filepath)s",
-        url,
-    ]
-
-
 def _clean_ytdlp_error(text: str) -> str:
     raw = (text or "").strip()
     if "HTTP Error 429" in raw or "Too Many Requests" in raw:
         return (
-            "YouTube sta limitando temporaneamente il download dei sottotitoli/transcript (HTTP 429 Too Many Requests). "
-            "Riprova più tardi oppure cambia video."
+            "YouTube sta limitando temporaneamente il transcript download (HTTP 429 Too Many Requests). "
+            "Allinea cookies / user-agent / pacing del comando yt-dlp."
         )
     if raw:
         return raw
     return "yt-dlp failed"
+
+
+def _quoted(parts: list[str]) -> str:
+    return " ".join(shlex.quote(p) for p in parts)
+
+
+def _langs_value(prefer_sub_langs: list[str]) -> str:
+    langs = [str(x).strip() for x in (prefer_sub_langs or []) if str(x).strip()]
+    return ",".join(langs) if langs else "en"
+
+
+def _build_pipeline_script(ytdlp_bin: str, extra_args: list[str], url: str, prefer_sub_langs: list[str]) -> str:
+    langs = _langs_value(prefer_sub_langs)
+
+    cmd = [
+        ytdlp_bin,
+        *extra_args,
+        "--skip-download",
+        "--write-auto-subs",
+        "--write-subs",
+        "--sub-lang", langs,
+        "--sub-format", "json3",
+        "-o", "%(id)s.%(ext)s",
+        url,
+    ]
+    ytdlp_cmd = _quoted(cmd)
+
+    # Pipeline:
+    # 1. scarica json3
+    # 2. estrae testo dagli events
+    # 3. elimina righe vuote e duplicati adiacenti/logici
+    # 4. concatena tutto in una riga transcript.txt
+    script = f"""
+set -euo pipefail
+
+workdir="$(mktemp -d)"
+trap 'rm -rf "$workdir"' EXIT
+cd "$workdir"
+
+{ytdlp_cmd} 1>&2
+
+shopt -s nullglob
+files=( *.json3 )
+if [ "${{#files[@]}}" -eq 0 ]; then
+  echo '{{"ok":false,"error":"no json3 subtitles produced"}}'
+  exit 0
+fi
+
+jq -r '.events[] | select(.segs) | [.segs[]?.utf8] | join("")' -- *.json3 \\
+  | awk 'NF && !seen[$0]++' \\
+  | paste -sd" " - > transcript.txt
+
+if [ ! -s transcript.txt ]; then
+  echo '{{"ok":false,"error":"empty transcript"}}'
+  exit 0
+fi
+
+python - <<'PYEOF'
+import json
+from pathlib import Path
+
+text = Path("transcript.txt").read_text(encoding="utf-8", errors="replace").strip()
+files = sorted(str(p.name) for p in Path(".").glob("*.json3"))
+
+print(json.dumps({{
+    "ok": True,
+    "transcript": text,
+    "transcript_preview": text[:4000],
+    "subtitle_paths": files,
+}}, ensure_ascii=False))
+PYEOF
+""".strip()
+
+    return script
 
 
 def make_yt_transcript_tool(ytdlp_bin: str, ytdlp_args: list[str] | None = None):
@@ -81,33 +136,47 @@ def make_yt_transcript_tool(ytdlp_bin: str, ytdlp_args: list[str] | None = None)
     extra_args = list(ytdlp_args or [])
 
     runner = TerminalToolBase(
-        allowed_bins=[ytdlp_bin],
+        allowed_bins=["bash"],
         timeout_s=180,
-        max_output_bytes=200_000,
+        max_output_bytes=250_000,
     )
 
     async def _handler(args: YTTranscriptArgs) -> dict:
         try:
-            cmd = [ytdlp_bin, *extra_args, *_extract_transcript_with_ytdlp_cmd(args.url, args.prefer_sub_langs)]
+            script = _build_pipeline_script(
+                ytdlp_bin=ytdlp_bin,
+                extra_args=extra_args,
+                url=args.url,
+                prefer_sub_langs=args.prefer_sub_langs,
+            )
+
+            _debug_yt(f"transcript ytdlp_bin={ytdlp_bin}")
+            _debug_yt(f"transcript extra_args={extra_args}")
+            _debug_yt("transcript shell script follows:")
+            _debug_yt(script)
+
             res = runner.run_cmd(
-                cmd,
+                ["bash", "-lc", script],
                 prefix="[youtube:transcript]",
                 timeout_s=int(args.timeout_s),
             )
 
             if res.returncode != 0:
-                return tool_error(_clean_ytdlp_error((res.stderr or "") + "\n" + (res.stdout or ""))[:2000])
+                return tool_error(_clean_ytdlp_error((res.stderr or "") + "\n" + (res.stdout or ""))[:4000])
 
-            lines = [line.strip() for line in (res.stdout or "").splitlines() if line.strip()]
-            subtitle_paths = [line for line in lines if line.endswith(".vtt") or line.endswith(".srv3") or line.endswith(".ttml")]
+            payload = json.loads(res.stdout or "{}")
+            if not payload.get("ok"):
+                return tool_error(str(payload.get("error") or "youtube transcript failed"))
 
             return tool_ok(
                 {
                     "url": args.url,
-                    "subtitle_paths": subtitle_paths,
-                    "stdout": (res.stdout or "")[:4000],
-                    "stderr": (res.stderr or "")[:4000],
+                    "transcript": str(payload.get("transcript") or "").strip(),
+                    "transcript_preview": str(payload.get("transcript_preview") or "").strip(),
+                    "subtitle_paths": list(payload.get("subtitle_paths") or []),
                     "backend": runner.backend,
+                    "ytdlp_bin": ytdlp_bin,
+                    "extra_args": extra_args,
                 },
                 language=args.lang,
             )
@@ -116,7 +185,7 @@ def make_yt_transcript_tool(ytdlp_bin: str, ytdlp_args: list[str] | None = None)
 
     return ToolSpec(
         name="yt_transcript",
-        description="Extract YouTube transcript/subtitles using yt-dlp.",
+        description="Extract YouTube transcript/subtitles using yt-dlp + jq pipeline.",
         schema=YTTranscriptArgs,
         handler=_handler,
     )
@@ -131,41 +200,39 @@ def make_yt_summary_tool(
     extra_args = list(ytdlp_args or [])
 
     runner = TerminalToolBase(
-        allowed_bins=[ytdlp_bin, "python"],
+        allowed_bins=["bash"],
         timeout_s=180,
-        max_output_bytes=250_000,
+        max_output_bytes=300_000,
     )
 
     async def _handler(args: YTSummaryArgs) -> dict:
         try:
-            cmd = [ytdlp_bin, *extra_args, *_extract_transcript_with_ytdlp_cmd(args.url, args.prefer_sub_langs)]
+            script = _build_pipeline_script(
+                ytdlp_bin=ytdlp_bin,
+                extra_args=extra_args,
+                url=args.url,
+                prefer_sub_langs=args.prefer_sub_langs,
+            )
+
+            _debug_yt(f"summary ytdlp_bin={ytdlp_bin}")
+            _debug_yt(f"summary extra_args={extra_args}")
+            _debug_yt("summary shell script follows:")
+            _debug_yt(script)
+
             res = runner.run_cmd(
-                cmd,
+                ["bash", "-lc", script],
                 prefix="[youtube:summary]",
                 timeout_s=int(args.timeout_s),
             )
 
             if res.returncode != 0:
-                return tool_error(_clean_ytdlp_error((res.stderr or "") + "\n" + (res.stdout or ""))[:2000])
+                return tool_error(_clean_ytdlp_error((res.stderr or "") + "\n" + (res.stdout or ""))[:4000])
 
-            lines = [line.strip() for line in (res.stdout or "").splitlines() if line.strip()]
-            subtitle_paths = [line for line in lines if line.endswith(".vtt") or line.endswith(".srv3") or line.endswith(".ttml")]
+            payload = json.loads(res.stdout or "{}")
+            if not payload.get("ok"):
+                return tool_error(str(payload.get("error") or "youtube summary failed"))
 
-            transcript = ""
-            if subtitle_paths:
-                path = subtitle_paths[-1]
-                read_res = runner.run_cmd(
-                    ["python", "-I", "-c", _PY_READ_TEXT, path],
-                    prefix="[youtube:summary:read]",
-                    timeout_s=10,
-                )
-                if read_res.returncode == 0:
-                    payload = json.loads(read_res.stdout or "{}")
-                    transcript = str(payload.get("text") or "").strip()
-
-            if not transcript:
-                transcript = (res.stdout or "").strip()
-
+            transcript = str(payload.get("transcript") or "").strip()
             if not transcript:
                 return tool_error("no transcript available")
 
@@ -175,9 +242,11 @@ def make_yt_summary_tool(
                 {
                     "url": args.url,
                     "summary": (summary or "").strip(),
-                    "transcript_preview": transcript[:4000],
-                    "subtitle_paths": subtitle_paths,
+                    "transcript_preview": str(payload.get("transcript_preview") or "").strip(),
+                    "subtitle_paths": list(payload.get("subtitle_paths") or []),
                     "backend": runner.backend,
+                    "ytdlp_bin": ytdlp_bin,
+                    "extra_args": extra_args,
                 },
                 language=args.lang,
             )
@@ -186,21 +255,7 @@ def make_yt_summary_tool(
 
     return ToolSpec(
         name="yt_summary",
-        description="Summarize a YouTube video transcript using yt-dlp plus the local LLM.",
+        description="Summarize a YouTube video transcript using yt-dlp + jq pipeline + LLM.",
         schema=YTSummaryArgs,
         handler=_handler,
     )
-
-
-_PY_READ_TEXT = r'''
-import json
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1]).expanduser().resolve()
-try:
-    text = path.read_text(encoding="utf-8", errors="replace")
-    print(json.dumps({"ok": True, "text": text}, ensure_ascii=False))
-except Exception as e:
-    print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
-'''

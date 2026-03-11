@@ -1,9 +1,8 @@
-from picobot.ui.commands import CommandResult, handle_command, handle_local_command
-from picobot.ui.terminal import TerminalUI
+from picobot.ui.command_models import CommandResult
+from picobot.ui.commands import handle_command, handle_local_command
 
 __all__ = [
     "CommandResult",
     "handle_command",
     "handle_local_command",
-    "TerminalUI",
 ]

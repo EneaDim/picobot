@@ -29,14 +29,6 @@ def _safe_json_loads(text: str) -> Any:
 
 
 def _coerce_tool_calls(raw: Any) -> list[ToolCall]:
-    """
-    Interpreta un payload JSON minimale come lista di tool calls.
-
-    Formati supportati:
-    - {"tool_calls":[{"name":"x","arguments":{...}}]}
-    - {"tool":"x","arguments":{...}}
-    - [{"name":"x","arguments":{...}}]
-    """
     out: list[ToolCall] = []
 
     if raw is None:
@@ -91,9 +83,6 @@ class OllamaProvider:
             raise ValueError("Ollama model must not be empty")
 
     async def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """
-        Esegue POST su /api/chat e valida la risposta base.
-        """
         try:
             async with httpx.AsyncClient(timeout=self.timeout_s) as client:
                 response = await client.post(
@@ -122,9 +111,6 @@ class OllamaProvider:
         return data
 
     def _extract_message_content(self, data: dict[str, Any]) -> str:
-        """
-        Estrae il contenuto testuale principale.
-        """
         message = data.get("message") or {}
         if isinstance(message, dict):
             content = message.get("content")
@@ -150,16 +136,6 @@ class OllamaProvider:
         max_tokens: int | None = None,
         temperature: float = 0.1,
     ) -> ChatResponse:
-        """
-        Chat principale contro Ollama.
-
-        Se tools è vuoto:
-        - normale conversazione
-
-        Se tools è presente:
-        - prepende un system prompt minimale
-        - si aspetta eventualmente JSON con tool call
-        """
         msg_list = list(messages or [])
 
         if not msg_list:

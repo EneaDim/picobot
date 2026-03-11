@@ -12,6 +12,8 @@ from picobot.agent.workflow_dispatcher import WorkflowDispatcher
 from picobot.config.schema import Config
 from picobot.context import ContextBuilder
 from picobot.providers.ollama import OllamaProvider
+from picobot.providers.policy import provider_for_task
+from picobot.providers.registry import build_provider_registry
 from picobot.session.manager import Session
 from picobot.tools.file import make_file_tool
 from picobot.tools.news_digest import make_news_digest_tool
@@ -22,7 +24,6 @@ from picobot.tools.retrieval import make_kb_ingest_pdf_tool, make_kb_query_tool
 from picobot.tools.stt import make_stt_tool
 from picobot.tools.tts import make_tts_tool
 from picobot.tools.web import make_web_tool
-from picobot.tools.web_search import make_web_search_tool
 from picobot.tools.youtube import make_yt_summary_tool, make_yt_transcript_tool
 
 
@@ -43,6 +44,7 @@ class Orchestrator:
     def __init__(self, cfg: Config, provider: OllamaProvider, workspace: Path) -> None:
         self.cfg = cfg
         self.provider = provider
+        self.provider_registry = build_provider_registry(cfg)
         self.workspace = Path(workspace).expanduser().resolve()
         self.docs_root = self.workspace / "docs"
         self.docs_root.mkdir(parents=True, exist_ok=True)
@@ -81,7 +83,8 @@ class Orchestrator:
                 f"Please summarize the YouTube video transcript below in a structured way.\n\n"
                 f"Transcript:\n{transcript[:120000]}"
             )
-            resp = await self.provider.chat(
+            task_provider = provider_for_task(self.cfg, self.provider_registry, "summary")
+            resp = await task_provider.chat(
                 messages=[
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": user_prompt},
@@ -98,7 +101,6 @@ class Orchestrator:
             make_python_tool(self.cfg),
             make_file_tool(self.cfg),
             make_web_tool(self.cfg),
-            make_web_search_tool(self.cfg, self.workspace),
             make_news_digest_tool(self.cfg, self.workspace),
             make_yt_transcript_tool(ytdlp_bin, ytdlp_args=ytdlp_args),
             make_yt_summary_tool(ytdlp_bin, _llm_summarize, ytdlp_args=ytdlp_args),

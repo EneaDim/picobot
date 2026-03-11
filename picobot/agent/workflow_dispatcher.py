@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from picobot.agent.models import RuntimeHooks, StatusCb, TurnResult
 from picobot.prompts import kb_user_prompt
 from picobot.providers.ollama import OllamaProviderError, OllamaTimeout
+from picobot.providers.policy import provider_for_task
 from picobot.session.manager import Session
 from picobot.tools.base import ToolError
 from picobot.tools.news_digest import NewsDigestArgs
@@ -158,10 +159,15 @@ class WorkflowDispatcher:
         messages = assembly.model_context.to_messages(user_text=user_text)
 
         try:
-            resp = await self.orchestrator.provider.chat(
+            task_provider = provider_for_task(
+                self.orchestrator.cfg,
+                self.orchestrator.provider_registry,
+                "chat",
+            )
+            resp = await task_provider.chat(
                 messages=messages,
                 tools=None,
-                max_tokens=int(getattr(self.cfg.ollama, "max_tokens", 1200) or 1200),
+                max_tokens=int(getattr(self.orchestrator.cfg.ollama, "max_tokens", 1200) or 1200),
                 temperature=0.2,
             )
         except OllamaTimeout:
@@ -303,10 +309,15 @@ class WorkflowDispatcher:
         )
 
         try:
-            resp = await self.orchestrator.provider.chat(
+            task_provider = provider_for_task(
+                self.orchestrator.cfg,
+                self.orchestrator.provider_registry,
+                "qa",
+            )
+            resp = await task_provider.chat(
                 messages=messages,
                 tools=None,
-                max_tokens=int(getattr(self.cfg.ollama, "max_tokens", 1200) or 1200),
+                max_tokens=int(getattr(self.orchestrator.cfg.ollama, "max_tokens", 1200) or 1200),
                 temperature=0.0,
             )
         except OllamaTimeout:
@@ -413,9 +424,16 @@ class WorkflowDispatcher:
             await status("🎬 Recupero transcript e preparo il riassunto…")
 
         try:
+            youtube_cfg = getattr(self.orchestrator.cfg.tools, "youtube", None)
+            prefer_sub_langs = list(getattr(youtube_cfg, "prefer_sub_langs", []) or [])
+
             result = await self._execute_tool(
                 "yt_summary",
-                YTSummaryArgs(url=url, lang=lang).model_dump(),
+                YTSummaryArgs(
+                    url=url,
+                    lang=lang,
+                    prefer_sub_langs=prefer_sub_langs,
+                ).model_dump(),
                 hooks=hooks,
                 workflow_name="youtube_summarizer",
             )
@@ -473,7 +491,11 @@ class WorkflowDispatcher:
         try:
             result = await generate_podcast(
                 self.orchestrator.cfg,
-                self.orchestrator.provider,
+                provider_for_task(
+                    self.orchestrator.cfg,
+                    self.orchestrator.provider_registry,
+                    "podcast_writer",
+                ),
                 topic=topic,
                 lang=lang,
                 status=status,

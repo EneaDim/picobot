@@ -16,10 +16,6 @@ class BaseCfgModel(BaseModel):
 
 
 def _setattr_no_validate(obj: object, name: str, value: Any) -> None:
-    """
-    Assegna bypassando validate_assignment di Pydantic.
-    Serve dentro i model_validator(mode="after") per evitare ricorsioni.
-    """
     object.__setattr__(obj, name, value)
 
 
@@ -63,6 +59,45 @@ class OllamaConfig(BaseCfgModel):
     timeout_s: float = 600.0
     max_tokens: int = 1200
     podcast_max_tokens: int = 1800
+
+
+class LLMTaskRoutingConfig(BaseCfgModel):
+    chat: str = "ollama"
+    router: str = "ollama"
+    summary: str = "ollama"
+    podcast_writer: str = "ollama"
+    podcast_research: str = "ollama"
+    qa: str = "ollama"
+
+
+class LLMProviderConfig(BaseCfgModel):
+    enabled: bool = True
+    kind: str = "ollama"
+    model: str = ""
+    timeout_s: float = 600.0
+    max_tokens: int = 1200
+
+
+class LLMOllamaProviderConfig(LLMProviderConfig):
+    kind: str = "ollama"
+    base_url: str = "http://localhost:11434"
+
+
+class LLMGeminiProviderConfig(LLMProviderConfig):
+    kind: str = "gemini"
+    enabled: bool = False
+    api_key_env: str = "GEMINI_API_KEY"
+
+
+class LLMProvidersConfig(BaseCfgModel):
+    ollama: LLMOllamaProviderConfig = Field(default_factory=LLMOllamaProviderConfig)
+    gemini: LLMGeminiProviderConfig = Field(default_factory=LLMGeminiProviderConfig)
+
+
+class LLMConfig(BaseCfgModel):
+    default_provider: str = "ollama"
+    tasks: LLMTaskRoutingConfig = Field(default_factory=LLMTaskRoutingConfig)
+    providers: LLMProvidersConfig = Field(default_factory=LLMProvidersConfig)
 
 
 class VectorConfig(BaseCfgModel):
@@ -182,8 +217,6 @@ class ToolsPiperConfig(BaseCfgModel):
     })
     models_dir: str = "/opt/picobot/models/piper"
     custom_voice_urls: dict[str, dict[str, str]] = Field(default_factory=dict)
-
-    # alias/compat per configurazioni vecchie o code path legacy
     voices: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -225,7 +258,6 @@ class ToolsConfig(BaseCfgModel):
     sandbox_exec: ToolsSandboxExecConfig = Field(default_factory=ToolsSandboxExecConfig)
     youtube: ToolsYouTubeConfig = Field(default_factory=ToolsYouTubeConfig)
 
-    # legacy flat fields
     ytdlp_bin: str = ""
     ytdlp_args: list[str] = Field(default_factory=list)
 
@@ -245,7 +277,6 @@ class ToolsConfig(BaseCfgModel):
 
     @model_validator(mode="after")
     def _sync_legacy_and_nested(self) -> "ToolsConfig":
-        # nested -> legacy
         if not self.ytdlp_bin and self.bins.ytdlp:
             _setattr_no_validate(self, "ytdlp_bin", self.bins.ytdlp)
         if not self.ffmpeg_bin and self.bins.ffmpeg:
@@ -270,7 +301,6 @@ class ToolsConfig(BaseCfgModel):
         if not self.piper_model_en and self.models.piper_en:
             _setattr_no_validate(self, "piper_model_en", self.models.piper_en)
 
-        # legacy -> nested
         if not self.bins.ytdlp and self.ytdlp_bin:
             _setattr_no_validate(self.bins, "ytdlp", self.ytdlp_bin)
         if not self.bins.ffmpeg and self.ffmpeg_bin:
@@ -415,6 +445,8 @@ class Config(BaseCfgModel):
     kb: KBConfig = Field(default_factory=KBConfig)
 
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
+
     vector: VectorConfig = Field(default_factory=VectorConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
@@ -462,6 +494,26 @@ class Config(BaseCfgModel):
         if not self.sandbox.exec.allowed_bins and self.tools.sandbox_exec.allowed_bins:
             _setattr_no_validate(self.sandbox.exec, "allowed_bins", list(self.tools.sandbox_exec.allowed_bins))
 
+        # sync legacy ollama -> llm.providers.ollama
+        llm_ollama = self.llm.providers.ollama
+        if not llm_ollama.base_url and self.ollama.base_url:
+            _setattr_no_validate(llm_ollama, "base_url", self.ollama.base_url)
+        if not llm_ollama.model and self.ollama.model:
+            _setattr_no_validate(llm_ollama, "model", self.ollama.model)
+        if not llm_ollama.timeout_s and self.ollama.timeout_s:
+            _setattr_no_validate(llm_ollama, "timeout_s", self.ollama.timeout_s)
+        if not llm_ollama.max_tokens and self.ollama.max_tokens:
+            _setattr_no_validate(llm_ollama, "max_tokens", self.ollama.max_tokens)
+
+        if self.ollama.base_url:
+            _setattr_no_validate(llm_ollama, "base_url", self.ollama.base_url)
+        if self.ollama.model:
+            _setattr_no_validate(llm_ollama, "model", self.ollama.model)
+        if self.ollama.timeout_s:
+            _setattr_no_validate(llm_ollama, "timeout_s", self.ollama.timeout_s)
+        if self.ollama.max_tokens:
+            _setattr_no_validate(llm_ollama, "max_tokens", self.ollama.max_tokens)
+
         _setattr_no_validate(self, "workspace", str(Path(self.workspace).expanduser()))
         _setattr_no_validate(self.qdrant, "path", str(Path(self.qdrant.path).expanduser()))
         _setattr_no_validate(self.podcast, "output_dir", str(Path(self.podcast.output_dir).expanduser()))
@@ -494,6 +546,7 @@ Summary = SummaryConfig
 Debug = DebugConfig
 UI = UIConfig
 Ollama = OllamaConfig
+LLM = LLMConfig
 Vector = VectorConfig
 Embeddings = EmbeddingsConfig
 Qdrant = QdrantConfig

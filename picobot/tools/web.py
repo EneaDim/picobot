@@ -1,23 +1,33 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from picobot.prompts import detect_language
 from picobot.runtime_config import cfg_get
+from picobot.services.search_backend import WebSearchUnavailableError
+from picobot.services.web_search_service import WebSearchService
 from picobot.tools.base import ToolSpec, tool_error, tool_ok
 from picobot.tools.terminal_tool import TerminalToolBase
 
 
 class WebToolArgs(BaseModel):
-    url: str = Field(..., min_length=8)
+    operation: Literal["fetch", "search"] = Field(default="fetch")
+
+    # fetch
+    url: str | None = Field(default=None)
     timeout_s: float = Field(default=8.0, ge=1.0, le=30.0)
     max_bytes: int = Field(default=200_000, ge=10_000, le=2_000_000)
     whitelist: list[str] = Field(default_factory=list)
     max_chars: int | None = Field(default=None)
+
+    # search
+    query: str | None = Field(default=None)
+    count: int = Field(default=5, ge=1, le=10)
+    language: str = Field(default="auto")
 
 
 def _cfg_value(cfg: Any | None, path: str, default: Any) -> Any:
@@ -44,71 +54,129 @@ def make_web_tool(cfg=None):
         timeout_s=int(max(default_timeout, 1.0)),
         max_output_bytes=int(_cfg_value(cfg, "sandbox.exec.max_output_bytes", 200_000) or 200_000),
     )
+    search_service = WebSearchService(cfg) if cfg is not None else None
+
+    async def _handle_fetch(args: WebToolArgs) -> dict:
+        if not args.url:
+            return tool_error("url is required for operation=fetch")
+
+        timeout_s = float(getattr(args, "timeout_s", None) or default_timeout)
+        max_bytes = int((args.max_chars or 0) or args.max_bytes or default_max_bytes)
+        wl = args.whitelist or default_whitelist
+
+        u = urlparse(args.url)
+        if u.scheme not in {"http", "https"}:
+            return tool_error("url must be http(s)")
+
+        host = (u.hostname or "").lower().strip()
+        if not host:
+            return tool_error("invalid url")
+
+        wl_norm = [(d or "").lower().strip() for d in (wl or []) if (d or "").strip()]
+        if wl_norm and host not in set(wl_norm):
+            return tool_error("domain not allowed")
+
+        payload = json.dumps(
+            {
+                "url": args.url,
+                "timeout_s": timeout_s,
+                "max_bytes": max_bytes,
+            },
+            ensure_ascii=False,
+        )
+
+        res = runner.run_cmd(
+            ["python", "-I", "-c", _PY_FETCH],
+            prefix="[web:fetch]",
+            timeout_s=int(timeout_s) + 2,
+            input_bytes=payload.encode("utf-8"),
+        )
+        if res.returncode != 0:
+            return tool_error((res.stderr or "error")[:500])
+
+        data = json.loads(res.stdout or "{}")
+        if not data.get("ok"):
+            return tool_error(data.get("error") or "fetch error")
+
+        text = (data.get("text") or "").strip()
+        lang = detect_language(text, default="it") if text else None
+
+        return tool_ok(
+            {
+                "operation": "fetch",
+                "backend": runner.backend,
+                "url": args.url,
+                "title": (data.get("title") or "").strip(),
+                "description": (data.get("description") or "").strip(),
+                "text": text,
+                "length": len(text),
+                "truncated": bool(data.get("truncated")),
+                "items": [],
+                "results": [],
+            },
+            language=lang,
+        )
+
+    async def _handle_search(args: WebToolArgs) -> dict:
+        query = str(args.query or "").strip()
+        if not query:
+            return tool_error("query is required for operation=search")
+
+        if search_service is None:
+            return tool_error("web search service is not configured")
+
+        try:
+            items = search_service.search_general(
+                query=query,
+                count=args.count,
+                language=args.language,
+            )
+        except WebSearchUnavailableError as e:
+            return tool_error(str(e))
+        except Exception as e:
+            return tool_error(f"web search failed: {e}")
+
+        data_items = [
+            {
+                "title": item.title,
+                "url": item.url,
+                "description": item.description,
+                "source": item.source,
+            }
+            for item in items
+        ]
+
+        return tool_ok(
+            {
+                "operation": "search",
+                "backend": "web_search_service",
+                "query": query,
+                "count": len(data_items),
+                "items": data_items,
+                "results": data_items,
+                "text": "",
+                "title": "",
+                "description": "",
+                "url": "",
+            },
+            language=args.language,
+        )
 
     async def _handler(args: WebToolArgs | dict) -> dict:
         try:
             if isinstance(args, dict):
                 args = WebToolArgs.model_validate(args)
 
-            timeout_s = float(getattr(args, "timeout_s", None) or default_timeout)
-            max_bytes = int((args.max_chars or 0) or args.max_bytes or default_max_bytes)
-            wl = args.whitelist or default_whitelist
+            if args.operation == "search":
+                return await _handle_search(args)
 
-            u = urlparse(args.url)
-            if u.scheme not in {"http", "https"}:
-                return tool_error("url must be http(s)")
-
-            host = (u.hostname or "").lower().strip()
-            if not host:
-                return tool_error("invalid url")
-
-            wl_norm = [(d or "").lower().strip() for d in (wl or []) if (d or "").strip()]
-            if wl_norm and host not in set(wl_norm):
-                return tool_error("domain not allowed")
-
-            payload = json.dumps(
-                {
-                    "url": args.url,
-                    "timeout_s": timeout_s,
-                    "max_bytes": max_bytes,
-                },
-                ensure_ascii=False,
-            )
-
-            res = runner.run_cmd(
-                ["python", "-I", "-c", _PY_FETCH],
-                prefix="[web]",
-                timeout_s=int(timeout_s) + 2,
-                input_bytes=payload.encode("utf-8"),
-            )
-            if res.returncode != 0:
-                return tool_error((res.stderr or "error")[:500])
-
-            data = json.loads(res.stdout or "{}")
-            if not data.get("ok"):
-                return tool_error(data.get("error") or "fetch error")
-
-            text = (data.get("text") or "").strip()
-            lang = detect_language(text, default="it") if text else None
-
-            return tool_ok(
-                {
-                    "backend": runner.backend,
-                    "url": args.url,
-                    "title": (data.get("title") or "").strip(),
-                    "description": (data.get("description") or "").strip(),
-                    "text": text,
-                    "length": len(text),
-                    "truncated": bool(data.get("truncated")),
-                },
-                language=lang,
-            )
+            return await _handle_fetch(args)
         except Exception as e:
             return tool_error(str(e))
 
     return ToolSpec(
         name="web",
-        description="Fetch a URL inside the configured sandbox backend.",
+        description="Unified web tool: operation=fetch reads a URL, operation=search searches the web.",
         schema=WebToolArgs,
         handler=_handler,
     )

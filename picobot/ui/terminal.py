@@ -13,6 +13,7 @@ from picobot.ui.render import (
     outbound_kind_and_text,
     prompt_label,
 )
+from picobot.ui.command_catalog import COMMAND_WORDS
 
 try:
     from prompt_toolkit import PromptSession
@@ -33,26 +34,6 @@ except Exception:
     HAVE_PROMPT_TOOLKIT = False
 
 
-_COMMAND_WORDS = [
-    "/help",
-    "/exit",
-    "/quit",
-    "/status",
-    "/tools",
-    "/mem",
-    "/mem tail",
-    "/mem summary",
-    "/mem facts",
-    "/kb",
-    "/kb list",
-    "/kb use",
-    "/kb ingest",
-    "/kb query",
-    "/news",
-    "/yt",
-    "/python",
-    "/tts",
-]
 
 
 class TerminalUI:
@@ -74,7 +55,7 @@ class TerminalUI:
             history_path.parent.mkdir(parents=True, exist_ok=True)
 
             completer = WordCompleter(
-                _COMMAND_WORDS,
+                COMMAND_WORDS,
                 ignore_case=True,
                 sentence=True,
                 match_middle=True,
@@ -100,15 +81,17 @@ class TerminalUI:
     def _wipe_status_line(self) -> None:
         if not self._status_visible:
             return
-        print("\r\033[2K", end="", flush=True)
+        # Torna alla riga precedente e cancellala completamente.
+        print("\033[1A\r\033[2K", end="", flush=True)
         self._status_visible = False
         self._status_text = ""
 
     def show_status(self, text: str) -> None:
-        self._wipe_status_line()
+        if self._status_visible:
+            print("\033[1A\r\033[2K", end="", flush=True)
         self._status_text = text
         self._status_visible = True
-        print(f"\r\033[2K{text}", end="", flush=True)
+        print(text, flush=True)
 
     def clear_status(self) -> None:
         self._wipe_status_line()
