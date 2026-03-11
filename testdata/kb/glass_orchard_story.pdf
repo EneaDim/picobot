@@ -1,0 +1,346 @@
+%PDF-1.4
+%âãÏÓ
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Length 2129 >>
+stream
+BT
+/F1 12 Tf
+50 800 Td
+14 TL
+/F1 18 Tf
+(Project Glass Orchard ? dossier narrativo per test KB) Tj
+/F1 12 Tf
+T*
+() Tj
+T*
+(1. Premessa) Tj
+T*
+() Tj
+T*
+(Nel marzo 2023 la biologa computazionale Livia Serra ricevette un archivio cifrato da) Tj
+T*
+(Arturo Venn, ex cartografo industriale della società Northwake Signals.) Tj
+T*
+() Tj
+T*
+(L'archivio conteneva note, mappe e trascrizioni relative a un progetto interno chiamato) Tj
+T*
+(Glass Orchard.) Tj
+T*
+() Tj
+T*
+(Secondo le note iniziali, Glass Orchard non era un prodotto commerciale ma un programma) Tj
+T*
+(di osservazione territoriale pensato per studiare micro-ecosistemi urbani attraverso) Tj
+T*
+(sensori ottici e sonici.) Tj
+T*
+() Tj
+T*
+(2. Personaggi chiave) Tj
+T*
+() Tj
+T*
+(Livia Serra è la protagonista principale del dossier. Nata a Parma, lavora tra Milano e) Tj
+T*
+(Trieste e ha una formazione mista in bioinformatica e sistemi distribuiti.) Tj
+T*
+() Tj
+T*
+(Arturo Venn è descritto come riservato, metodico e quasi ossessionato dalle) Tj
+T*
+(nomenclature. Nei documenti interni usa spesso l'alias A. Venn oppure la sigla AV-17.) Tj
+T*
+() Tj
+T*
+(Mira Koenig è la responsabile delle operazioni sul campo. Coordina i team locali e firma) Tj
+T*
+(le checklist con la sigla MK.) Tj
+T*
+() Tj
+T*
+(Jonas Reed è il referente sicurezza del programma. In un memo del 14 aprile 2023 insiste) Tj
+T*
+(sul fatto che il nodo Delta-Red non deve mai essere sincronizzato durante le finestre di) Tj
+T*
+(manutenzione.) Tj
+T*
+() Tj
+T*
+(3. Luoghi) Tj
+T*
+() Tj
+T*
+(I luoghi principali citati sono quattro: Serra Vetro a Trieste, il deposito Old Quarry) Tj
+T*
+(vicino a Gorizia, il laboratorio Faro-3 a Ravenna e il padiglione Echo Basin alla) Tj
+T*
+(periferia di Lubiana.) Tj
+T*
+() Tj
+T*
+(Serra Vetro non è una serra agricola tradizionale ma un ex vivaio riadattato a centro di) Tj
+T*
+(calibrazione sensori.) Tj
+T*
+() Tj
+T*
+(Old Quarry è importante perché ospita la camera fredda dove venivano conservati i moduli) Tj
+T*
+(Prisma-4 prima della distribuzione.) Tj
+T*
+() Tj
+T*
+(Faro-3 compare nei documenti come sito di verifica firmware, mentre Echo Basin è usato) Tj
+T*
+T*
+(Pagina 1 di 4) Tj
+ET
+endstream
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 2 0 R >>
+endobj
+4 0 obj
+<< /Length 2009 >>
+stream
+BT
+/F1 12 Tf
+50 800 Td
+14 TL
+(per simulazioni acustiche notturne.) Tj
+T*
+() Tj
+T*
+(4. Oggetti e componenti) Tj
+T*
+() Tj
+T*
+(I componenti più importanti sono il sensore Prisma-4, il modulo di sincronizzazione) Tj
+T*
+(Lantern, il pacco batterie Morrow e il relay a bassa potenza Delta-Red.) Tj
+T*
+() Tj
+T*
+(Prisma-4 è ottimizzato per luce diffusa e superfici riflettenti. In più pagine viene) Tj
+T*
+(specificato che non è affidabile sotto pioggia intensa.) Tj
+T*
+() Tj
+T*
+(Lantern è il componente usato per riallineare i timestamp tra i nodi remoti. Arturo Venn) Tj
+T*
+(lo definisce il metronomo del sistema.) Tj
+T*
+() Tj
+T*
+(Morrow è un pacco batterie sperimentale, leggero ma instabile oltre i 34 gradi.) Tj
+T*
+() Tj
+T*
+(Delta-Red non è un sensore ma un relay di coordinamento usato nelle finestre di handoff) Tj
+T*
+(tra cluster.) Tj
+T*
+() Tj
+T*
+(5. Timeline operativa) Tj
+T*
+() Tj
+T*
+(Il 12 marzo 2023 Livia Serra riceve il primo archivio parziale.) Tj
+T*
+() Tj
+T*
+(Il 14 aprile 2023 Jonas Reed invia il memo di sicurezza sul nodo Delta-Red.) Tj
+T*
+() Tj
+T*
+(Il 2 maggio 2023 Mira Koenig autorizza una prova notturna a Echo Basin con tre unità) Tj
+T*
+(Prisma-4 e due moduli Lantern.) Tj
+T*
+() Tj
+T*
+(Il 18 maggio 2023 una nota interna segnala che il pacco Morrow si degrada più) Tj
+T*
+(rapidamente del previsto nel sito Faro-3.) Tj
+T*
+() Tj
+T*
+(Il 7 giugno 2023 Arturo Venn consegna a Livia una mappa annotata a mano con il percorso) Tj
+T*
+(Serra Vetro -> Old Quarry -> Echo Basin.) Tj
+T*
+() Tj
+T*
+(Il 21 giugno 2023 il test di sincronizzazione viene sospeso perché un relay Delta-Red) Tj
+T*
+(entra in stato incoerente dopo una finestra di manutenzione non autorizzata.) Tj
+T*
+() Tj
+T*
+(6. Incidenti e anomalie) Tj
+T*
+() Tj
+T*
+(L'anomalia più citata è chiamata river ghosting: un riflesso multiplo che altera la) Tj
+T*
+(lettura di Prisma-4 vicino a superfici bagnate o vetrate.) Tj
+T*
+() Tj
+T*
+(Una seconda anomalia, chiamata lantern drift, si verifica quando i moduli Lantern) Tj
+T*
+T*
+(Pagina 2 di 4) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 1809 >>
+stream
+BT
+/F1 12 Tf
+50 800 Td
+14 TL
+(perdono allineamento dopo lunghi periodi senza ricalibrazione.) Tj
+T*
+() Tj
+T*
+(Il dossier precisa che river ghosting e lantern drift sono problemi distinti e non) Tj
+T*
+(devono essere confusi.) Tj
+T*
+() Tj
+T*
+(In un allegato tecnico si specifica che il river ghosting è stato osservato soprattutto) Tj
+T*
+(nel sito Serra Vetro, mentre il lantern drift è stato riprodotto più volte a Echo Basin.) Tj
+T*
+() Tj
+T*
+(7. Regole operative) Tj
+T*
+() Tj
+T*
+(Mai sincronizzare Delta-Red durante manutenzione attiva.) Tj
+T*
+() Tj
+T*
+(Mai usare Morrow oltre i 34 gradi ambiente.) Tj
+T*
+() Tj
+T*
+(Se Prisma-4 opera vicino a vetrate bagnate, marcare i risultati come potenzialmente) Tj
+T*
+(affetti da river ghosting.) Tj
+T*
+() Tj
+T*
+(Ogni sessione notturna a Echo Basin deve includere almeno un controllo Lantern prima e) Tj
+T*
+(dopo il test.) Tj
+T*
+() Tj
+T*
+(8. Dettagli volutamente facili da confondere) Tj
+T*
+() Tj
+T*
+(Serra Vetro è a Trieste, non a Ravenna.) Tj
+T*
+() Tj
+T*
+(Faro-3 è a Ravenna, non a Lubiana.) Tj
+T*
+() Tj
+T*
+(Mira Koenig autorizza la prova del 2 maggio 2023; Jonas Reed scrive invece il memo del) Tj
+T*
+(14 aprile 2023.) Tj
+T*
+() Tj
+T*
+(Delta-Red non è un sensore ottico, mentre Prisma-4 sì.) Tj
+T*
+() Tj
+T*
+(Lantern serve per la sincronizzazione dei timestamp, non per la misura ambientale) Tj
+T*
+(diretta.) Tj
+T*
+() Tj
+T*
+(9. Chiusura) Tj
+T*
+() Tj
+T*
+(Livia Serra conclude che Glass Orchard non era solo un esperimento ambientale, ma anche) Tj
+T*
+(un test di governance tecnica: i documenti mostrano che i problemi più gravi nascevano) Tj
+T*
+(dai passaggi di coordinamento tra persone, siti e procedure.) Tj
+T*
+() Tj
+T*
+(La frase finale del dossier è: il sistema falliva meno per i sensori e più per le) Tj
+T*
+(eccezioni non dichiarate.) Tj
+T*
+T*
+(Pagina 3 di 4) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 6 0 R >>
+endobj
+8 0 obj
+<< /Length 62 >>
+stream
+BT
+/F1 12 Tf
+50 800 Td
+14 TL
+() Tj
+T*
+T*
+(Pagina 4 di 4) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 8 0 R >>
+endobj
+10 0 obj
+<< /Type /Pages /Count 4 /Kids [ 3 0 R 5 0 R 7 0 R 9 0 R ] >>
+endobj
+11 0 obj
+<< /Type /Catalog /Pages 10 0 R >>
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000085 00000 n 
+0000002266 00000 n 
+0000002392 00000 n 
+0000004453 00000 n 
+0000004579 00000 n 
+0000006440 00000 n 
+0000006566 00000 n 
+0000006678 00000 n 
+0000006804 00000 n 
+0000006882 00000 n 
+trailer
+<< /Size 12 /Root 11 0 R >>
+startxref
+6933
+%%EOF

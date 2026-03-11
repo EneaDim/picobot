@@ -34,8 +34,6 @@ except Exception:
     HAVE_PROMPT_TOOLKIT = False
 
 
-
-
 class TerminalUI:
     def __init__(self, *, cfg, workspace: Path) -> None:
         self.cfg = cfg
@@ -81,17 +79,17 @@ class TerminalUI:
     def _wipe_status_line(self) -> None:
         if not self._status_visible:
             return
-        # Torna alla riga precedente e cancellala completamente.
         print("\033[1A\r\033[2K", end="", flush=True)
         self._status_visible = False
         self._status_text = ""
 
     def show_status(self, text: str) -> None:
+        line = f"⏳ {text.strip()}" if text else ""
         if self._status_visible:
             print("\033[1A\r\033[2K", end="", flush=True)
-        self._status_text = text
+        self._status_text = line
         self._status_visible = True
-        print(text, flush=True)
+        print(line, flush=True)
 
     def clear_status(self) -> None:
         self._wipe_status_line()
@@ -132,9 +130,21 @@ class TerminalUI:
         cli_channel,
         correlation_id: str,
         debug_cb: Callable[[str], None] | None = None,
+        idle_after_terminal_ms: int = 220,
     ) -> None:
+        saw_terminal_output = False
+
         while True:
-            msg = await cli_channel.outbound_queue.get()
+            try:
+                if saw_terminal_output:
+                    msg = await asyncio.wait_for(
+                        cli_channel.outbound_queue.get(),
+                        timeout=max(idle_after_terminal_ms, 50) / 1000.0,
+                    )
+                else:
+                    msg = await cli_channel.outbound_queue.get()
+            except asyncio.TimeoutError:
+                break
 
             if getattr(msg, "correlation_id", None) != correlation_id:
                 if debug_cb:
@@ -156,12 +166,18 @@ class TerminalUI:
 
             if kind == "assistant" and text:
                 self.print_assistant(text)
+                saw_terminal_output = True
             elif kind == "error" and text:
                 self.print_error(text)
+                break
             elif kind == "audio" and text:
                 self.print_audio(text)
+                saw_terminal_output = True
             else:
                 self.clear_status()
 
-            if getattr(msg, "message_type", "") in {"outbound.text", "outbound.error"}:
-                break
+            # Dopo il primo output terminale, attendiamo una brevissima finestra
+            # per eventuali companion messages (es. text + audio).
+            continue
+
+        self.clear_status()

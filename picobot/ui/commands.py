@@ -6,10 +6,10 @@ import picobot.ui.command_helpers as command_helpers
 from picobot.routing.deterministic import route_json_one_line
 from picobot.ui.command_catalog import HELP_TEXT
 
-# Backward-compatible re-exports for older tests/monkeypatch paths.
 from picobot.retrieval.ingest import ingest_kb  # noqa: F401
 from picobot.retrieval.query import query_kb  # noqa: F401
 from picobot.ui.command_handlers_kb import dispatch_kb_command
+from picobot.ui.command_handlers_media import dispatch_media_command
 from picobot.ui.command_handlers_mem import dispatch_mem_command
 from picobot.ui.command_helpers import active_kb_name, list_registered_tools, load_session
 from picobot.ui.command_models import CommandResult
@@ -26,6 +26,7 @@ _LOCAL_ONLY_COMMANDS = {
     "/mem clean",
     "/kb",
     "/kb list",
+    "/play",
 }
 
 _LOCAL_PREFIXES = (
@@ -33,9 +34,11 @@ _LOCAL_PREFIXES = (
     "/kb ingest ",
     "/kb query ",
     "/route ",
+    "/play ",
 )
 
 _PASSTHROUGH_PREFIXES = (
+    "/kb ask",
     "/news",
     "/yt",
     "/python",
@@ -85,8 +88,6 @@ def handle_local_command(
 
     session = load_session(workspace=workspace, session_id=session_id)
 
-    # Compat: i test monkeypatchano ancora picobot.ui.commands.ingest_kb/query_kb.
-    # Riallineiamo i riferimenti usati dai helper KB al valore corrente di questo modulo.
     command_helpers.ingest_kb = ingest_kb
     command_helpers.query_kb = query_kb
 
@@ -100,11 +101,14 @@ def handle_local_command(
         sandbox = getattr(getattr(cfg, "sandbox", None), "runtime", None)
         ollama = getattr(cfg, "ollama", None)
         kb_name = active_kb_name(cfg=cfg, session=session)
+        state = session.get_state()
+        last_audio_path = str(state.get("last_audio_path") or "").strip() or "-"
         lines = [
             "Stato runtime",
             f"- workspace: {workspace}",
             f"- session_id: {session_id}",
             f"- kb attiva: {kb_name}",
+            f"- ultimo audio: {last_audio_path}",
             f"- ollama base_url: {getattr(ollama, 'base_url', None)}",
             f"- ollama model: {getattr(ollama, 'model', None)}",
             f"- sandbox backend: {getattr(sandbox, 'backend', None)}",
@@ -126,6 +130,10 @@ def handle_local_command(
     if text == "/route":
         return CommandResult(handled=True, text="Uso: /route <testo>")
 
+    result = dispatch_media_command(text=text, session=session)
+    if result is not None:
+        return result
+
     result = dispatch_mem_command(
         text=text,
         cfg=cfg,
@@ -140,6 +148,8 @@ def handle_local_command(
         cfg=cfg,
         workspace=Path(workspace),
         session=session,
+        ingest_fn=ingest_kb,
+        query_fn=query_kb,
     )
     if result is not None:
         return result
@@ -150,12 +160,7 @@ def handle_local_command(
     if _is_local_command(text):
         return CommandResult(handled=True, text=f"Comando locale non supportato: {text}")
 
-    # Forward di default per mantenere la CLI quasi paritetica con Telegram.
-    return CommandResult(
-        handled=True,
-        bus_text=text,
-        text=None,
-    )
+    return CommandResult(handled=True, bus_text=text, text=None)
 
 
 def handle_command(

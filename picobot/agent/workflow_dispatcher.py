@@ -30,7 +30,6 @@ def _provider_name(provider: Any) -> str | None:
     name = getattr(provider, "name", None)
     if isinstance(name, str) and name.strip():
         return name.strip()
-
     cls_name = provider.__class__.__name__
     if cls_name.endswith("Provider"):
         cls_name = cls_name[:-8]
@@ -38,13 +37,6 @@ def _provider_name(provider: Any) -> str | None:
 
 
 class WorkflowDispatcher:
-    """
-    Esegue i workflow dell'agente.
-
-    Questo oggetto separa la logica dei workflow dal turn-level control flow.
-    L'orchestrator resta facade compatibile, ma non contiene più tutta la logica.
-    """
-
     def __init__(self, orchestrator: "Orchestrator") -> None:
         self.orchestrator = orchestrator
 
@@ -73,8 +65,19 @@ class WorkflowDispatcher:
         lang: str,
         tool_name: str,
         args: dict[str, Any],
+        status: StatusCb | None = None,
         hooks: RuntimeHooks | None = None,
     ) -> TurnResult:
+        if status:
+            labels = {
+                "tts": "🔊 Sto generando l'audio…",
+                "stt": "🎙️ Sto trascrivendo l'audio…",
+                "web": "🌐 Sto interrogando il backend web…",
+                "python": "🐍 Sto eseguendo il codice Python…",
+                "file": "📄 Sto leggendo il file…",
+            }
+            await status(labels.get(tool_name, f"🧰 Eseguo il tool {tool_name}…"))
+
         try:
             result = await self._execute_tool(
                 tool_name,
@@ -123,7 +126,37 @@ class WorkflowDispatcher:
 
         data = result.get("data") or {}
         audio_path = str(data.get("audio_path") or "").strip() or None
-        self.orchestrator.memory_context_service.store_audio_state(session, audio_path)
+        if audio_path:
+            self.orchestrator.memory_context_service.store_audio_state(session, audio_path)
+
+        if tool_name == "tts" and audio_path:
+            message = (
+                f"Audio TTS generato.\nPath: {audio_path}"
+                if lang == "it"
+                else f"TTS audio generated.\nPath: {audio_path}"
+            )
+            return TurnResult(
+                content=message,
+                action="tool",
+                reason="tool:tts",
+                audio_path=audio_path,
+                audit={
+                    "tool_name": "tts",
+                    "tool_ok": True,
+                    "suppress_text_when_audio": True,
+                    "audio_caption": "🔊 Audio TTS generato",
+                },
+            )
+
+        if tool_name == "stt":
+            transcript = str(data.get("text") or data.get("transcript") or "").strip()
+            if transcript:
+                return TurnResult(
+                    content=transcript,
+                    action="tool",
+                    reason="tool:stt",
+                    audit={"tool_name": "stt", "tool_ok": True},
+                )
 
         pretty = json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -214,6 +247,13 @@ class WorkflowDispatcher:
         status: StatusCb | None,
         hooks: RuntimeHooks | None = None,
     ) -> TurnResult:
+        raw_user_text = (user_text or "").strip()
+        lowered = raw_user_text.lower()
+        if lowered.startswith("/kb query"):
+            raw_user_text = raw_user_text[len("/kb query"):].strip()
+        elif lowered.startswith("/kb ask"):
+            raw_user_text = raw_user_text[len("/kb ask"):].strip()
+
         kb_name = str(session.get_state().get("kb_name") or self.orchestrator.cfg.default_kb_name or "default").strip()
         top_k = int(getattr(self.orchestrator.cfg.retrieval, "top_k", 4) or 4)
 
@@ -232,7 +272,7 @@ class WorkflowDispatcher:
         try:
             tool_res = await self._execute_tool(
                 "kb_query",
-                {"kb_name": kb_name, "query": user_text, "top_k": top_k},
+                {"kb_name": kb_name, "query": raw_user_text, "top_k": top_k},
                 hooks=hooks,
                 workflow_name="kb_query",
             )
@@ -330,7 +370,7 @@ class WorkflowDispatcher:
         )
 
         messages = assembly.model_context.to_messages(
-            user_text=kb_user_prompt(lang=lang, question=user_text, context=context)
+            user_text=kb_user_prompt(lang=lang, question=raw_user_text, context=context)
         )
 
         task_provider = self.orchestrator.resolve_provider("qa")
@@ -364,8 +404,16 @@ class WorkflowDispatcher:
                 audit={"workflow_name": "kb_query", "provider_name": provider_name, "kb_name": kb_name, "retrieval_hits": hits},
             )
 
+        content = (resp.content or "").strip()
+        if not content:
+            content = (
+                "Ho trovato contesto nella KB ma il modello non ha prodotto una risposta utile."
+                if lang == "it"
+                else "I found KB context but the model did not produce a useful answer."
+            )
+
         return TurnResult(
-            content=(resp.content or "").strip(),
+            content=content,
             action="workflow",
             reason="kb_query",
             retrieval_hits=hits,
@@ -567,7 +615,13 @@ class WorkflowDispatcher:
             audio_path=result.audio_path,
             script=result.script,
             provider_name=provider_name,
-            audit={"workflow_name": "podcast", "provider_name": provider_name, "topic": topic},
+            audit={
+                "workflow_name": "podcast",
+                "provider_name": provider_name,
+                "topic": topic,
+                "suppress_text_when_audio": False,
+                "audio_caption": "🎧 Podcast pronto",
+            },
         )
 
     async def dispatch(

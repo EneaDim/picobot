@@ -7,10 +7,6 @@ from picobot.session.manager import Session
 
 
 class RuntimeEventPublisher:
-    """
-    Boundary dedicato per pubblicare runtime events e outbound messages.
-    """
-
     def __init__(self, *, bus: MessageBus) -> None:
         self.bus = bus
 
@@ -36,76 +32,31 @@ class RuntimeEventPublisher:
 
     def make_turn_hooks(self, *, inbound: InboundMessage, session_id: str) -> RuntimeHooks:
         async def _route_selected(payload: dict) -> None:
-            await self.publish_runtime_event(
-                inbound=inbound,
-                session_id=session_id,
-                event_type="runtime.turn.route_selected",
-                payload=payload,
-            )
+            await self.publish_runtime_event(inbound=inbound, session_id=session_id, event_type="runtime.turn.route_selected", payload=payload)
 
         async def _context_built(payload: dict) -> None:
-            await self.publish_runtime_event(
-                inbound=inbound,
-                session_id=session_id,
-                event_type="runtime.turn.context_built",
-                payload=payload,
-            )
+            await self.publish_runtime_event(inbound=inbound, session_id=session_id, event_type="runtime.turn.context_built", payload=payload)
 
         async def _tool_started(payload: dict) -> None:
-            await self.publish_runtime_event(
-                inbound=inbound,
-                session_id=session_id,
-                event_type="runtime.tool.started",
-                payload=payload,
-            )
+            await self.publish_runtime_event(inbound=inbound, session_id=session_id, event_type="runtime.tool.started", payload=payload)
 
         async def _tool_completed(payload: dict) -> None:
-            await self.publish_runtime_event(
-                inbound=inbound,
-                session_id=session_id,
-                event_type="runtime.tool.completed",
-                payload=payload,
-            )
+            await self.publish_runtime_event(inbound=inbound, session_id=session_id, event_type="runtime.tool.completed", payload=payload)
 
         async def _tool_failed(payload: dict) -> None:
-            await self.publish_runtime_event(
-                inbound=inbound,
-                session_id=session_id,
-                event_type="runtime.tool.failed",
-                payload=payload,
-            )
+            await self.publish_runtime_event(inbound=inbound, session_id=session_id, event_type="runtime.tool.failed", payload=payload)
 
         async def _retrieval_started(payload: dict) -> None:
-            await self.publish_runtime_event(
-                inbound=inbound,
-                session_id=session_id,
-                event_type="runtime.retrieval.started",
-                payload=payload,
-            )
+            await self.publish_runtime_event(inbound=inbound, session_id=session_id, event_type="runtime.retrieval.started", payload=payload)
 
         async def _retrieval_completed(payload: dict) -> None:
-            await self.publish_runtime_event(
-                inbound=inbound,
-                session_id=session_id,
-                event_type="runtime.retrieval.completed",
-                payload=payload,
-            )
+            await self.publish_runtime_event(inbound=inbound, session_id=session_id, event_type="runtime.retrieval.completed", payload=payload)
 
         async def _memory_updated(payload: dict) -> None:
-            await self.publish_runtime_event(
-                inbound=inbound,
-                session_id=session_id,
-                event_type="runtime.memory.updated",
-                payload=payload,
-            )
+            await self.publish_runtime_event(inbound=inbound, session_id=session_id, event_type="runtime.memory.updated", payload=payload)
 
         async def _audio_generated(payload: dict) -> None:
-            await self.publish_runtime_event(
-                inbound=inbound,
-                session_id=session_id,
-                event_type="runtime.audio.generated",
-                payload=payload,
-            )
+            await self.publish_runtime_event(inbound=inbound, session_id=session_id, event_type="runtime.audio.generated", payload=payload)
 
         return RuntimeHooks(
             on_route_selected=_route_selected,
@@ -130,10 +81,7 @@ class RuntimeEventPublisher:
             inbound=inbound,
             session_id=session.session_id,
             event_type="runtime.turn_started",
-            payload={
-                "input_type": inbound.message_type,
-                "text_len": len(user_text),
-            },
+            payload={"input_type": inbound.message_type, "text_len": len(user_text)},
         )
 
     async def publish_turn_completed(
@@ -180,20 +128,12 @@ class RuntimeEventPublisher:
             payload={"error": str(error)},
         )
 
-    async def publish_inbound_ignored(
-        self,
-        *,
-        inbound: InboundMessage,
-        reason: str,
-    ) -> None:
+    async def publish_inbound_ignored(self, *, inbound: InboundMessage, reason: str) -> None:
         await self.publish_runtime_event(
             inbound=inbound,
             session_id=inbound.session_id,
             event_type="runtime.inbound_ignored",
-            payload={
-                "reason": reason,
-                "message_type": inbound.message_type,
-            },
+            payload={"reason": reason, "message_type": inbound.message_type},
         )
 
     async def publish_heartbeat_snapshot(
@@ -218,13 +158,7 @@ class RuntimeEventPublisher:
             },
         )
 
-    async def publish_status(
-        self,
-        *,
-        inbound: InboundMessage,
-        session: Session,
-        text: str,
-    ) -> None:
+    async def publish_status(self, *, inbound: InboundMessage, session: Session, text: str) -> None:
         await self.bus.publish(
             outbound_status(
                 channel=inbound.channel,
@@ -236,13 +170,7 @@ class RuntimeEventPublisher:
             )
         )
 
-    async def publish_error(
-        self,
-        *,
-        inbound: InboundMessage,
-        session: Session,
-        text: str,
-    ) -> None:
+    async def publish_error(self, *, inbound: InboundMessage, session: Session, text: str) -> None:
         await self.bus.publish(
             outbound_error(
                 channel=inbound.channel,
@@ -254,17 +182,8 @@ class RuntimeEventPublisher:
             )
         )
 
-    async def publish_empty_input_error(
-        self,
-        *,
-        inbound: InboundMessage,
-        session: Session,
-    ) -> None:
-        await self.publish_error(
-            inbound=inbound,
-            session=session,
-            text="Input vuoto.",
-        )
+    async def publish_empty_input_error(self, *, inbound: InboundMessage, session: Session) -> None:
+        await self.publish_error(inbound=inbound, session=session, text="Input vuoto.")
 
     async def publish_turn_outputs(
         self,
@@ -273,8 +192,14 @@ class RuntimeEventPublisher:
         session: Session,
         result,
     ) -> None:
+        audit = dict(getattr(result, "audit", {}) or {})
+        suppress_text_when_audio = bool(audit.get("suppress_text_when_audio"))
+        audio_caption = str(audit.get("audio_caption") or "").strip() or None
+
         text = str(result.content or "").strip()
-        if text:
+        has_audio = bool(result.audio_path)
+
+        if text and not (has_audio and suppress_text_when_audio):
             await self.bus.publish(
                 outbound_text(
                     channel=inbound.channel,
@@ -286,14 +211,14 @@ class RuntimeEventPublisher:
                 )
             )
 
-        if result.audio_path:
+        if has_audio:
             await self.bus.publish(
                 outbound_audio(
                     channel=inbound.channel,
                     chat_id=inbound.chat_id,
                     session_id=session.session_id,
                     audio_path=result.audio_path,
-                    caption=str(result.content or "").strip() or None,
+                    caption=audio_caption or (text if text and not suppress_text_when_audio else None),
                     correlation_id=inbound.correlation_id,
                     causation_id=inbound.message_id,
                 )

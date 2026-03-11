@@ -16,6 +16,8 @@ COMMAND_SPECS: list[CommandSpec] = [
     CommandSpec("/status", "Stato runtime"),
     CommandSpec("/tools", "Lista tool registrati"),
     CommandSpec("/route <testo>", "Mostra la route deterministica senza eseguire il turno"),
+    CommandSpec("/play", "Riproduce l'ultimo audio generato nella sessione"),
+    CommandSpec("/play <path>", "Riproduce un file audio specifico"),
     CommandSpec("/mem", "Mostra session state"),
     CommandSpec("/mem tail", "Mostra history"),
     CommandSpec("/mem summary", "Mostra summary"),
@@ -25,7 +27,8 @@ COMMAND_SPECS: list[CommandSpec] = [
     CommandSpec("/kb list", "Lista KB"),
     CommandSpec("/kb use <name>", "Seleziona KB"),
     CommandSpec("/kb ingest <path>", "Ingest PDF nella KB"),
-    CommandSpec("/kb query <testo>", "Query locale raw e deterministica nella KB"),
+    CommandSpec("/kb query <query>", "Query locale raw e deterministica nella KB"),
+    CommandSpec("/kb ask <domanda>", "Retrieval + LLM grounded sulla KB attiva"),
     CommandSpec("/news <query>", "Pass-through al runtime per news digest"),
     CommandSpec("/yt <url>", "Pass-through al runtime per YouTube summary"),
     CommandSpec("/python <code>", "Pass-through al runtime per tool python"),
@@ -44,9 +47,16 @@ def command_words() -> list[str]:
 
 def build_help_text() -> str:
     sections = {
-        "Sistema": ["/help", "/exit", "/quit", "/status", "/tools", "/route <testo>"],
+        "Sistema": ["/help", "/exit", "/quit", "/status", "/tools", "/route <testo>", "/play", "/play <path>"],
         "Memoria": ["/mem", "/mem tail", "/mem summary", "/mem facts", "/mem clean"],
-        "KB": ["/kb", "/kb list", "/kb use <name>", "/kb ingest <path>", "/kb query <testo>"],
+        "KB": [
+            "/kb",
+            "/kb list",
+            "/kb use <name>",
+            "/kb ingest <path>",
+            "/kb query <query>",
+            "/kb ask <domanda>",
+        ],
         "Pass-through runtime": [
             "/news <query>",
             "/yt <url>",
@@ -63,7 +73,9 @@ def build_help_text() -> str:
     lines = [
         "Comandi disponibili",
         "",
-        "Nota: /kb query resta locale e deterministico; le domande naturali con KB attiva passano invece dal runtime/router.",
+        "Nota: /kb query resta locale e deterministico.",
+        "Nota: /kb ask usa retrieval + LLM grounded sulla KB attiva.",
+        "Nota: /play è locale alla CLI. Su Telegram l'audio viene inviato direttamente come outbound audio.",
         "",
     ]
 

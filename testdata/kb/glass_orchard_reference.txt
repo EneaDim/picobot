@@ -1,0 +1,44 @@
+KB TEST ASSET — GLASS ORCHARD
+
+Scopo
+Questo file accompagna il PDF glass_orchard_story.pdf.
+Serve per verificare che la KB locale riesca a recuperare fatti specifici, distinguere entità simili e sostenere grounded answers.
+
+Fatti chiave
+- Protagonista principale: Livia Serra
+- Ex cartografo industriale: Arturo Venn
+- Alias di Arturo Venn: A. Venn, AV-17
+- Responsabile operazioni sul campo: Mira Koenig
+- Referente sicurezza: Jonas Reed
+- Serra Vetro si trova a Trieste
+- Faro-3 si trova a Ravenna
+- Echo Basin si trova alla periferia di Lubiana
+- Prisma-4 è un sensore ottico
+- Delta-Red è un relay, non un sensore
+- Lantern serve a riallineare i timestamp
+- Morrow è instabile oltre i 34 gradi
+- River ghosting colpisce soprattutto Prisma-4 vicino a superfici bagnate o vetrate
+- Lantern drift riguarda la perdita di allineamento dei moduli Lantern
+- Memo di sicurezza di Jonas Reed: 14 aprile 2023
+- Prova notturna autorizzata da Mira Koenig: 2 maggio 2023
+- Percorso annotato da Arturo Venn: Serra Vetro -> Old Quarry -> Echo Basin
+- Frase finale del dossier: il sistema falliva meno per i sensori e più per le eccezioni non dichiarate
+
+Query raw buone per /kb query
+1. Chi è Arturo Venn?
+2. Qual è l'alias di Arturo Venn?
+3. Dove si trova Serra Vetro?
+4. A cosa serve Lantern?
+5. Cos'è Delta-Red?
+6. Chi ha autorizzato la prova del 2 maggio 2023?
+7. Qual è la differenza tra river ghosting e lantern drift?
+8. Cosa succede a Morrow oltre i 34 gradi?
+9. Quale percorso è annotato nella mappa del 7 giugno 2023?
+10. Qual è la frase finale del dossier?
+
+Query grounded buone con KB attiva
+1. Riassumi i rischi operativi principali di Glass Orchard.
+2. Spiegami perché Delta-Red è considerato delicato nel dossier.
+3. Confronta Prisma-4 e Lantern per funzione e failure mode.
+4. Quali segnali mostrano che i problemi erano soprattutto di coordinamento?
+5. Se dovessi definire tre regole operative non negoziabili, quali prenderesti dal dossier?

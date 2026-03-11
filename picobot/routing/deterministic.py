@@ -7,29 +7,20 @@ from pathlib import Path
 from picobot.prompts import detect_language
 from picobot.routing.router_service import RouterService
 from picobot.routing.schemas import RouteCandidate, RouteDecision, SessionRouteContext
+from picobot.runtime_config import cfg_get
 
 _router: RouterService | None = None
 
 
 def _get_router() -> RouterService:
-    """
-    Inizializzazione lazy del router di processo.
-    Evita side effects pesanti a import-time e permette close ordinato.
-    """
     global _router
-
     if _router is None:
         _router = RouterService()
-
     return _router
 
 
 def _close_router() -> None:
-    """
-    Cleanup esplicito a fine processo.
-    """
     global _router
-
     if _router is not None:
         try:
             _router.close()
@@ -55,6 +46,9 @@ def _session_ctx_from_state_file(state_file: Path, input_lang: str) -> SessionRo
     except Exception:
         kb_name = ""
         kb_enabled = True
+
+    if not kb_name:
+        kb_name = str(cfg_get("default_kb_name", "") or "").strip()
 
     return SessionRouteContext(
         kb_name=kb_name,

@@ -72,6 +72,7 @@ class TurnProcessor:
                 lang=route.lang,
                 tool_name=route.route_name or "",
                 args=dict(getattr(decision, "args", {}) or {}),
+                status=status,
                 hooks=hooks,
             )
         else:
