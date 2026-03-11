@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -38,8 +39,11 @@ class TerminalUI:
     def __init__(self, *, cfg, workspace: Path) -> None:
         self.cfg = cfg
         self.workspace = Path(workspace).expanduser().resolve()
+
         self._status_visible = False
         self._status_text = ""
+        self._status_since = 0.0
+        self._status_min_visible_sec = 0.35
 
         ui_cfg = getattr(cfg, "ui", None)
         use_pt = bool(getattr(ui_cfg, "use_prompt_toolkit", True))
@@ -79,36 +83,47 @@ class TerminalUI:
     def _wipe_status_line(self) -> None:
         if not self._status_visible:
             return
-        print("\033[1A\r\033[2K", end="", flush=True)
+        print("\r\033[2K", end="", flush=True)
         self._status_visible = False
         self._status_text = ""
+        self._status_since = 0.0
 
     def show_status(self, text: str) -> None:
-        line = f"⏳ {text.strip()}" if text else ""
+        line = f"⏳ {str(text or '').strip()}"
+        if not line.strip():
+            return
+
         if self._status_visible:
-            print("\033[1A\r\033[2K", end="", flush=True)
+            print("\r\033[2K", end="", flush=True)
+
         self._status_text = line
         self._status_visible = True
-        print(line, flush=True)
+        self._status_since = time.monotonic()
+        print(f"\r{line}", end="", flush=True)
 
     def clear_status(self) -> None:
+        if self._status_visible:
+            elapsed = time.monotonic() - self._status_since
+            remaining = self._status_min_visible_sec - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
         self._wipe_status_line()
 
     def print_info(self, text: str) -> None:
         self.clear_status()
-        print(info_block(text))
+        print(info_block(text), flush=True)
 
     def print_assistant(self, text: str) -> None:
         self.clear_status()
-        print(assistant_block(text))
+        print(assistant_block(text), flush=True)
 
     def print_error(self, text: str) -> None:
         self.clear_status()
-        print(error_block(text))
+        print(error_block(text), flush=True)
 
     def print_audio(self, text: str) -> None:
         self.clear_status()
-        print(audio_block(text))
+        print(audio_block(text), flush=True)
 
     async def prompt(self) -> str:
         self.clear_status()
@@ -130,19 +145,17 @@ class TerminalUI:
         cli_channel,
         correlation_id: str,
         debug_cb: Callable[[str], None] | None = None,
-        idle_after_terminal_ms: int = 220,
+        idle_after_terminal_ms: int = 350,
     ) -> None:
-        saw_terminal_output = False
+        saw_non_status = False
 
         while True:
             try:
-                if saw_terminal_output:
-                    msg = await asyncio.wait_for(
-                        cli_channel.outbound_queue.get(),
-                        timeout=max(idle_after_terminal_ms, 50) / 1000.0,
-                    )
-                else:
+                timeout_sec = max(idle_after_terminal_ms, 80) / 1000.0 if saw_non_status else None
+                if timeout_sec is None:
                     msg = await cli_channel.outbound_queue.get()
+                else:
+                    msg = await asyncio.wait_for(cli_channel.outbound_queue.get(), timeout=timeout_sec)
             except asyncio.TimeoutError:
                 break
 
@@ -155,6 +168,7 @@ class TerminalUI:
                 continue
 
             kind, text = outbound_kind_and_text(msg)
+
             if debug_cb:
                 payload = getattr(msg, "payload", {}) or {}
                 debug_cb(f"recv type={getattr(msg, 'message_type', '?')} payload_keys={list(payload.keys())}")
@@ -166,18 +180,17 @@ class TerminalUI:
 
             if kind == "assistant" and text:
                 self.print_assistant(text)
-                saw_terminal_output = True
-            elif kind == "error" and text:
-                self.print_error(text)
-                break
-            elif kind == "audio" and text:
-                self.print_audio(text)
-                saw_terminal_output = True
-            else:
-                self.clear_status()
+                saw_non_status = True
+                continue
 
-            # Dopo il primo output terminale, attendiamo una brevissima finestra
-            # per eventuali companion messages (es. text + audio).
-            continue
+            if kind == "audio" and text:
+                self.print_audio(text)
+                saw_non_status = True
+                continue
+
+            if kind == "error" and text:
+                self.print_error(text)
+                saw_non_status = True
+                break
 
         self.clear_status()

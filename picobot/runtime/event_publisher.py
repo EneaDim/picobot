@@ -70,13 +70,7 @@ class RuntimeEventPublisher:
             on_audio_generated=_audio_generated,
         )
 
-    async def publish_turn_started(
-        self,
-        *,
-        inbound: InboundMessage,
-        session: Session,
-        user_text: str,
-    ) -> None:
+    async def publish_turn_started(self, *, inbound: InboundMessage, session: Session, user_text: str) -> None:
         await self.publish_runtime_event(
             inbound=inbound,
             session_id=session.session_id,
@@ -84,13 +78,7 @@ class RuntimeEventPublisher:
             payload={"input_type": inbound.message_type, "text_len": len(user_text)},
         )
 
-    async def publish_turn_completed(
-        self,
-        *,
-        inbound: InboundMessage,
-        session: Session,
-        result,
-    ) -> None:
+    async def publish_turn_completed(self, *, inbound: InboundMessage, session: Session, result) -> None:
         await self.publish_runtime_event(
             inbound=inbound,
             session_id=session.session_id,
@@ -114,13 +102,7 @@ class RuntimeEventPublisher:
             },
         )
 
-    async def publish_turn_failed(
-        self,
-        *,
-        inbound: InboundMessage,
-        session: Session,
-        error: Exception,
-    ) -> None:
+    async def publish_turn_failed(self, *, inbound: InboundMessage, session: Session, error: Exception) -> None:
         await self.publish_runtime_event(
             inbound=inbound,
             session_id=session.session_id,
@@ -185,16 +167,11 @@ class RuntimeEventPublisher:
     async def publish_empty_input_error(self, *, inbound: InboundMessage, session: Session) -> None:
         await self.publish_error(inbound=inbound, session=session, text="Input vuoto.")
 
-    async def publish_turn_outputs(
-        self,
-        *,
-        inbound: InboundMessage,
-        session: Session,
-        result,
-    ) -> None:
+    async def publish_turn_outputs(self, *, inbound: InboundMessage, session: Session, result) -> None:
         audit = dict(getattr(result, "audit", {}) or {})
         suppress_text_when_audio = bool(audit.get("suppress_text_when_audio"))
         audio_caption = str(audit.get("audio_caption") or "").strip() or None
+        audio_backend = str(audit.get("audio_backend") or "").strip() or None
 
         text = str(result.content or "").strip()
         has_audio = bool(result.audio_path)
@@ -212,13 +189,19 @@ class RuntimeEventPublisher:
             )
 
         if has_audio:
+            payload = {"audio_path": result.audio_path}
+            if audio_caption:
+                payload["caption"] = audio_caption
+            if audio_backend:
+                payload["backend"] = audio_backend
+
             await self.bus.publish(
                 outbound_audio(
                     channel=inbound.channel,
                     chat_id=inbound.chat_id,
                     session_id=session.session_id,
                     audio_path=result.audio_path,
-                    caption=audio_caption or (text if text and not suppress_text_when_audio else None),
+                    caption=payload.get("caption"),
                     correlation_id=inbound.correlation_id,
                     causation_id=inbound.message_id,
                 )

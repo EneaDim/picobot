@@ -126,15 +126,15 @@ class WorkflowDispatcher:
 
         data = result.get("data") or {}
         audio_path = str(data.get("audio_path") or "").strip() or None
+        backend = str(data.get("backend") or "").strip() or None
+
         if audio_path:
             self.orchestrator.memory_context_service.store_audio_state(session, audio_path)
 
         if tool_name == "tts" and audio_path:
-            message = (
-                f"Audio TTS generato.\nPath: {audio_path}"
-                if lang == "it"
-                else f"TTS audio generated.\nPath: {audio_path}"
-            )
+            message = "Audio TTS generato."
+            if backend:
+                message += f"\nBackend: {backend}"
             return TurnResult(
                 content=message,
                 action="tool",
@@ -145,6 +145,7 @@ class WorkflowDispatcher:
                     "tool_ok": True,
                     "suppress_text_when_audio": True,
                     "audio_caption": "🔊 Audio TTS generato",
+                    "audio_backend": backend,
                 },
             )
 
@@ -156,6 +157,16 @@ class WorkflowDispatcher:
                     action="tool",
                     reason="tool:stt",
                     audit={"tool_name": "stt", "tool_ok": True},
+                )
+
+        if tool_name == "web":
+            text = str(data.get("text") or data.get("content") or "").strip()
+            if text:
+                return TurnResult(
+                    content=text,
+                    action="tool",
+                    reason="tool:web",
+                    audit={"tool_name": "web", "tool_ok": True},
                 )
 
         pretty = json.dumps(data, ensure_ascii=False, indent=2)
@@ -518,11 +529,7 @@ class WorkflowDispatcher:
 
             result = await self._execute_tool(
                 "yt_summary",
-                YTSummaryArgs(
-                    url=url,
-                    lang=lang,
-                    prefer_sub_langs=prefer_sub_langs,
-                ).model_dump(),
+                YTSummaryArgs(url=url, lang=lang, prefer_sub_langs=prefer_sub_langs).model_dump(),
                 hooks=hooks,
                 workflow_name="youtube_summarizer",
             )
@@ -603,9 +610,9 @@ class WorkflowDispatcher:
         self.orchestrator.memory_context_service.store_audio_state(session, result.audio_path)
 
         msg = (
-            f"🎧 Podcast pronto.\nAudio: {result.audio_path}"
+            f"🎧 Podcast pronto.\nPath: {result.audio_path}"
             if lang == "it"
-            else f"🎧 Podcast ready.\nAudio: {result.audio_path}"
+            else f"🎧 Podcast ready.\nPath: {result.audio_path}"
         )
 
         return TurnResult(
