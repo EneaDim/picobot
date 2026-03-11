@@ -43,7 +43,6 @@ _TTS_INTENT_RX = re.compile(
     re.IGNORECASE,
 )
 
-# pattern abbastanza conservativi: tts solo quando c'è testo reale da sintetizzare
 _TTS_QUOTED_RX = re.compile(
     r'(?:"([^"]+)"|\'([^\']+)\')',
     re.DOTALL,
@@ -69,7 +68,6 @@ _TTS_BAD_PAYLOADS = {
     "audio",
 }
 
-
 _PYTHON_INTENT_RX = re.compile(
     r"\b("
     r"usa python|"
@@ -88,6 +86,68 @@ _PYTHON_COLON_RX = re.compile(
 _PYTHON_INLINE_RX = re.compile(
     r"\b(?:usa python per|esegui in python|run in python)\b\s+(.+)$",
     re.IGNORECASE | re.DOTALL,
+)
+
+_STT_INTENT_RX = re.compile(
+    r"\b("
+    r"stt|"
+    r"speech to text|"
+    r"trascrivi|"
+    r"trascrizione|"
+    r"transcribe|"
+    r"transcription|"
+    r"voice note|"
+    r"audio file|"
+    r"messaggio vocale"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_AUDIO_PATH_RX = re.compile(
+    r'(?P<path>(?:[A-Za-z]:[\\/]|/|\.{1,2}/|~?/)?[^\s"\']+\.(?:wav|mp3|m4a|ogg|opus|flac|aac|mp4|mpeg|mpga))',
+    re.IGNORECASE,
+)
+
+_TEXT_GEN_RX = re.compile(
+    r"\b("
+    r"write|"
+    r"scrivi|"
+    r"explain|"
+    r"spiega|"
+    r"show me|"
+    r"fammi|"
+    r"dammi|"
+    r"generate|"
+    r"genera|"
+    r"create|"
+    r"crea|"
+    r"draft|"
+    r"command|"
+    r"terminal command|"
+    r"bash command|"
+    r"shell command|"
+    r"cat command|"
+    r"markdown|"
+    r"script|"
+    r"snippet|"
+    r"code"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_KB_QUERY_HINT_RX = re.compile(
+    r"\b("
+    r"kb|"
+    r"knowledge base|"
+    r"cerca nella kb|"
+    r"search the kb|"
+    r"nel documento|"
+    r"nel doc|"
+    r"documento|"
+    r"documentazione|"
+    r"from the document"
+    r")\b",
+    re.IGNORECASE,
 )
 
 
@@ -141,7 +201,6 @@ def _normalize_tts_text(text: str) -> str | None:
 def _extract_tts_args(text: str) -> dict | None:
     raw = (text or "").strip()
 
-    # 1) priorità al testo tra virgolette
     m = _TTS_QUOTED_RX.search(raw)
     if m:
         payload = m.group(1) or m.group(2) or ""
@@ -149,14 +208,12 @@ def _extract_tts_args(text: str) -> dict | None:
         if payload:
             return {"text": payload}
 
-    # 2) pattern con ":" -> molto affidabile
     m = _TTS_COLON_RX.search(raw)
     if m:
         payload = _normalize_tts_text(m.group(1))
         if payload:
             return {"text": payload}
 
-    # 3) pattern inline solo per forme veramente esplicite
     m = _TTS_INLINE_RX.search(raw)
     if m:
         payload = _normalize_tts_text(m.group(1))
@@ -196,6 +253,40 @@ def _extract_python_args(text: str) -> dict | None:
             return {"code": payload}
 
     return None
+
+
+def _looks_like_stt_request(text: str) -> bool:
+    return bool(_STT_INTENT_RX.search(text or ""))
+
+
+def _extract_stt_args(text: str) -> dict | None:
+    raw = (text or "").strip()
+    if not _looks_like_stt_request(raw):
+        return None
+
+    match = _AUDIO_PATH_RX.search(raw)
+    if not match:
+        return None
+
+    path = str(match.group("path") or "").strip()
+    if not path:
+        return None
+
+    return {"audio_path": path}
+
+
+def _looks_like_text_generation_request(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    return bool(_TEXT_GEN_RX.search(raw))
+
+
+def _looks_like_kb_query_request(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    return bool(_KB_QUERY_HINT_RX.search(raw))
 
 
 class RouterPolicy:
@@ -308,6 +399,7 @@ class RouterPolicy:
         ctx: SessionRouteContext,
     ) -> list[RouteCandidate]:
         out: list[RouteCandidate] = []
+        text_generation_request = _looks_like_text_generation_request(user_text)
 
         for candidate in candidates:
             record = candidate.record
@@ -315,12 +407,28 @@ class RouterPolicy:
             if record.requires_kb and (not ctx.has_kb or not ctx.kb_enabled):
                 continue
 
-            # TTS eleggibile solo se l'intento è davvero presente
+            if record.name == "kb_query" and not _looks_like_kb_query_request(user_text):
+                continue
+
+            # Richieste chiaramente di scrittura/comando/codice:
+            # niente tool arbitrari. Si lascia passare solo python se esplicito.
+            if text_generation_request and record.kind == "tool":
+                if record.name == "python" and _looks_like_python_request(user_text):
+                    pass
+                else:
+                    continue
+
             if record.name == "tts" and not _looks_like_tts_request(user_text):
                 continue
 
             if record.name == "python" and not _looks_like_python_request(user_text):
                 continue
+
+            if record.name == "stt":
+                if not _looks_like_stt_request(user_text):
+                    continue
+                if _extract_stt_args(user_text) is None:
+                    continue
 
             out.append(candidate)
 
@@ -380,8 +488,6 @@ class RouterPolicy:
         action = "tool" if record.kind == "tool" else "workflow"
         args: dict = {}
 
-        # Se selezioniamo TTS ma non riusciamo a ricavare il testo,
-        # meglio fallback a chat che chiamare il tool con args vuoti.
         if record.name == "tts":
             tts_args = _extract_tts_args(user_text)
             if not tts_args:
@@ -407,6 +513,19 @@ class RouterPolicy:
                     candidates=filtered,
                 )
             args = py_args
+
+        if record.name == "stt":
+            stt_args = _extract_stt_args(user_text)
+            if not stt_args:
+                return RouteDecision(
+                    action="workflow",
+                    name="chat",
+                    reason="stt intent detected but missing audio_path payload",
+                    args={},
+                    score=top1_score,
+                    candidates=filtered,
+                )
+            args = stt_args
 
         return RouteDecision(
             action=action,

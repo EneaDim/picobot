@@ -87,7 +87,7 @@ class Orchestrator:
                     {"role": "user", "content": user_prompt},
                 ],
                 tools=None,
-                max_tokens=900,
+                max_tokens=int(getattr(self.cfg.ollama, "max_tokens", 1200) or 1200),
                 temperature=0.1,
             )
             return (resp.content or "").strip()

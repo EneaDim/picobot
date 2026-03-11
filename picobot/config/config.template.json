@@ -13,7 +13,9 @@
   "ollama": {
     "base_url": "http://localhost:11434",
     "model": "qwen2.5:3b-instruct-q4_0",
-    "timeout_s": 600
+    "timeout_s": 600,
+    "max_tokens": 1200,
+    "podcast_max_tokens": 1800
   },
 
   "memory_limits": {

@@ -167,7 +167,7 @@ async def generate_podcast(
             {"role": "user", "content": user_prompt},
         ],
         tools=None,
-        max_tokens=1400,
+        max_tokens=int(getattr(cfg.ollama, "podcast_max_tokens", 1800) or 1800),
         temperature=0.4,
     )
 

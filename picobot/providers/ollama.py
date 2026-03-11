@@ -1,16 +1,5 @@
 from __future__ import annotations
 
-# Provider Ollama locale, pulito e robusto.
-#
-# Obiettivi:
-# - una sola implementazione chiara per /api/chat
-# - timeout ed errori leggibili
-# - supporto normale a chat testuale
-# - supporto opzionale a "tool protocol" JSON minimale
-#
-# Nota:
-# l'orchestrator nuovo usa quasi sempre chat senza tools.
-# Manteniamo però il ramo tools per compatibilità futura.
 import json
 from typing import Any
 
@@ -33,9 +22,6 @@ class OllamaTimeout(OllamaProviderError):
 
 
 def _safe_json_loads(text: str) -> Any:
-    """
-    json.loads sicuro.
-    """
     try:
         return json.loads(text)
     except Exception:
@@ -56,7 +42,6 @@ def _coerce_tool_calls(raw: Any) -> list[ToolCall]:
     if raw is None:
         return out
 
-    # Caso 1: lista diretta di tool calls.
     if isinstance(raw, list):
         for item in raw:
             if not isinstance(item, dict):
@@ -70,11 +55,9 @@ def _coerce_tool_calls(raw: Any) -> list[ToolCall]:
             out.append(ToolCall(name=name, arguments=arguments))
         return out
 
-    # Caso 2: dict con chiave tool_calls.
     if isinstance(raw, dict) and isinstance(raw.get("tool_calls"), list):
         return _coerce_tool_calls(raw.get("tool_calls"))
 
-    # Caso 3: dict singolo con tool / arguments.
     if isinstance(raw, dict):
         name = str(raw.get("name") or raw.get("tool") or "").strip()
         arguments = raw.get("arguments") or {}
@@ -89,13 +72,20 @@ def _coerce_tool_calls(raw: Any) -> list[ToolCall]:
 
 class OllamaProvider:
     """
-    Client minimale per Ollama locale.
+    Client minimale e robusto per Ollama locale.
     """
 
-    def __init__(self, base_url: str, model: str, timeout_s: float = 120.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout_s: float = 120.0,
+        default_max_tokens: int = 1200,
+    ) -> None:
         self.base_url = (base_url or "http://localhost:11434").rstrip("/")
         self.model = (model or "").strip()
         self.timeout_s = float(timeout_s or 120.0)
+        self.default_max_tokens = int(default_max_tokens or 1200)
 
         if not self.model:
             raise ValueError("Ollama model must not be empty")
@@ -141,18 +131,23 @@ class OllamaProvider:
             if isinstance(content, str):
                 return content.strip()
 
-        # fallback storico
         content = data.get("response")
         if isinstance(content, str):
             return content.strip()
 
         return ""
 
+    def _resolve_max_tokens(self, max_tokens: int | None) -> int:
+        value = int(max_tokens or self.default_max_tokens or 1200)
+        if value <= 0:
+            return 1200
+        return value
+
     async def chat(
         self,
         messages: list[dict[str, str]],
         tools: list[dict] | None = None,
-        max_tokens: int = 512,
+        max_tokens: int | None = None,
         temperature: float = 0.1,
     ) -> ChatResponse:
         """
@@ -170,7 +165,8 @@ class OllamaProvider:
         if not msg_list:
             raise OllamaProviderError("messages must not be empty")
 
-        # Ramo normale: niente tool protocol.
+        effective_max_tokens = self._resolve_max_tokens(max_tokens)
+
         if not tools:
             payload = {
                 "model": self.model,
@@ -178,7 +174,7 @@ class OllamaProvider:
                 "stream": False,
                 "options": {
                     "temperature": float(temperature),
-                    "num_predict": int(max_tokens),
+                    "num_predict": effective_max_tokens,
                 },
             }
 
@@ -190,7 +186,6 @@ class OllamaProvider:
                 tool_calls=[],
             )
 
-        # Ramo tools: protocollo JSON minimale.
         tool_names: list[str] = []
 
         for item in tools:
@@ -210,18 +205,16 @@ class OllamaProvider:
             "stream": False,
             "options": {
                 "temperature": float(temperature),
-                "num_predict": int(max_tokens),
+                "num_predict": effective_max_tokens,
             },
         }
 
         data = await self._post_chat(payload)
         raw_content = self._extract_message_content(data)
 
-        # Se il modello restituisce JSON tool protocol, lo interpretiamo.
         parsed = _safe_json_loads(raw_content)
         tool_calls = _coerce_tool_calls(parsed)
 
-        # Se non c'è JSON valido, trattiamo tutto come testo normale.
         if not tool_calls:
             return ChatResponse(
                 content=raw_content,

@@ -61,6 +61,8 @@ class OllamaConfig(BaseCfgModel):
     base_url: str = "http://localhost:11434"
     model: str = "qwen2.5:3b-instruct-q4_0"
     timeout_s: float = 600.0
+    max_tokens: int = 1200
+    podcast_max_tokens: int = 1800
 
 
 class VectorConfig(BaseCfgModel):
@@ -144,10 +146,10 @@ class WebSearchConfig(BaseCfgModel):
 
 
 class ToolsBinsConfig(BaseCfgModel):
-    ytdlp: str = ""
+    ytdlp: str = "yt-dlp"
     ffmpeg: str = "ffmpeg"
-    whisper_cpp_cli: str = ""
-    piper: str = ""
+    whisper_cpp_cli: str = "whisper-cli"
+    piper: str = "piper"
     arecord: str = "arecord"
     aplay: str = "aplay"
 
@@ -181,19 +183,16 @@ class ToolsPiperConfig(BaseCfgModel):
     models_dir: str = "/opt/picobot/models/piper"
     custom_voice_urls: dict[str, dict[str, str]] = Field(default_factory=dict)
 
+    # alias/compat per configurazioni vecchie o code path legacy
+    voices: list[str] = Field(default_factory=list)
 
-class ToolsPiperConfig(BaseCfgModel):
-    voices: list[str] = Field(default_factory=lambda: [
-        "it_IT-paola-medium",
-        "it_IT-aurora-medium",
-        "en_US-lessac-medium",
-        "en_US-amy-medium",
-        "en_US-ryan-high",
-    ])
-    default_voice_by_lang: dict[str, str] = Field(default_factory=lambda: {
-        "it": "it_IT-paola-medium",
-        "en": "en_US-lessac-medium",
-    })
+    @model_validator(mode="after")
+    def _sync_voices_alias(self) -> "ToolsPiperConfig":
+        if not self.voices and self.installed_voices:
+            _setattr_no_validate(self, "voices", list(self.installed_voices))
+        elif not self.installed_voices and self.voices:
+            _setattr_no_validate(self, "installed_voices", list(self.voices))
+        return self
 
 
 class ToolsSandboxExecConfig(BaseCfgModel):
@@ -226,6 +225,7 @@ class ToolsConfig(BaseCfgModel):
     sandbox_exec: ToolsSandboxExecConfig = Field(default_factory=ToolsSandboxExecConfig)
     youtube: ToolsYouTubeConfig = Field(default_factory=ToolsYouTubeConfig)
 
+    # legacy flat fields
     ytdlp_bin: str = ""
     ytdlp_args: list[str] = Field(default_factory=list)
 
@@ -245,6 +245,7 @@ class ToolsConfig(BaseCfgModel):
 
     @model_validator(mode="after")
     def _sync_legacy_and_nested(self) -> "ToolsConfig":
+        # nested -> legacy
         if not self.ytdlp_bin and self.bins.ytdlp:
             _setattr_no_validate(self, "ytdlp_bin", self.bins.ytdlp)
         if not self.ffmpeg_bin and self.bins.ffmpeg:
@@ -258,13 +259,18 @@ class ToolsConfig(BaseCfgModel):
         if not self.whisper_cpp_cli and self.bins.whisper_cpp_cli:
             _setattr_no_validate(self, "whisper_cpp_cli", self.bins.whisper_cpp_cli)
 
-        if not self.whisper_model and self.models.whisper_cpp:
-            _setattr_no_validate(self, "whisper_model", self.models.whisper_cpp)
+        if not self.whisper_model:
+            if self.whisper.model:
+                _setattr_no_validate(self, "whisper_model", self.whisper.model)
+            elif self.models.whisper_cpp:
+                _setattr_no_validate(self, "whisper_model", self.models.whisper_cpp)
+
         if not self.piper_model_it and self.models.piper_it:
             _setattr_no_validate(self, "piper_model_it", self.models.piper_it)
         if not self.piper_model_en and self.models.piper_en:
             _setattr_no_validate(self, "piper_model_en", self.models.piper_en)
 
+        # legacy -> nested
         if not self.bins.ytdlp and self.ytdlp_bin:
             _setattr_no_validate(self.bins, "ytdlp", self.ytdlp_bin)
         if not self.bins.ffmpeg and self.ffmpeg_bin:
@@ -280,6 +286,9 @@ class ToolsConfig(BaseCfgModel):
 
         if not self.models.whisper_cpp and self.whisper_model:
             _setattr_no_validate(self.models, "whisper_cpp", self.whisper_model)
+        if not self.whisper.model and self.whisper_model:
+            _setattr_no_validate(self.whisper, "model", self.whisper_model)
+
         if not self.models.piper_it and self.piper_model_it:
             _setattr_no_validate(self.models, "piper_it", self.piper_model_it)
         if not self.models.piper_en and self.piper_model_en:

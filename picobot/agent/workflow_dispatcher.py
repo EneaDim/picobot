@@ -161,7 +161,7 @@ class WorkflowDispatcher:
             resp = await self.orchestrator.provider.chat(
                 messages=messages,
                 tools=None,
-                max_tokens=900,
+                max_tokens=int(getattr(self.cfg.ollama, "max_tokens", 1200) or 1200),
                 temperature=0.2,
             )
         except OllamaTimeout:
@@ -306,7 +306,7 @@ class WorkflowDispatcher:
             resp = await self.orchestrator.provider.chat(
                 messages=messages,
                 tools=None,
-                max_tokens=900,
+                max_tokens=int(getattr(self.cfg.ollama, "max_tokens", 1200) or 1200),
                 temperature=0.0,
             )
         except OllamaTimeout:
