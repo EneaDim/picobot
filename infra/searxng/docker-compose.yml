@@ -1,11 +1,11 @@
 services:
   searxng:
-    image: infra/searxng/searxng:latest
+    image: infra/infra/searxng/searxng:latest
     container_name: picobot-searxng
     restart: unless-stopped
     ports:
       - "8080:8080"
     volumes:
-      - ./config/settings.yml:/etc/infra/searxng/settings.yml:ro
+      - ./config/settings.yml:/etc/infra/infra/searxng/settings.yml:ro
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080/

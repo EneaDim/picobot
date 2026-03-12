@@ -1,0 +1,16 @@
+PICOBOT — REPO RULES
+====================
+
+1. Il codice applicativo core vive solo in picobot/
+2. I dati di test vivono in tests/fixtures/data/
+3. Gli script operativi vivono in dev/scripts/
+4. Il sandbox Docker vive in docker/
+5. I servizi locali di supporto vivono in infra/
+6. Non aggiungere nuovi file top-level senza motivo forte
+7. Gli output runtime devono stare in .picobot/workspace/outputs/
+8. Le modifiche architetturali devono privilegiare:
+   - separazione tool vs orchestration
+   - context building condiviso
+   - osservabilità
+   - auditabilità
+   - compatibilità con futuri subagent

@@ -58,6 +58,7 @@ reinstall:
 clean:
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
+	rm -rf *.egg-info
 
 init:
 	$(PYTHON) -m picobot.config.init
