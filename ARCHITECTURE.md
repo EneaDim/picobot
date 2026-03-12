@@ -573,16 +573,16 @@ Comandi applicativi e utility UX:
 ### `utils/helpers.py`
 Helper generici.
 
-### `scripts/make_test_pdf.py`
+### `dev/scripts/make_test_pdf.py`
 Generatore PDF di test.
 
 ### `docker/picobot-sandbox.Dockerfile`
 Dockerfile della sandbox.
 
-### `searxng/docker-compose.yml`
+### `infra/searxng/docker-compose.yml`
 Compose del backend search locale.
 
-### `searxng/config/settings.yml`
+### `infra/searxng/config/settings.yml`
 Config SearXNG.
 
 ---

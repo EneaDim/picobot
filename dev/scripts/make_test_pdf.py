@@ -114,7 +114,7 @@ def build_pdf(lines: list[str]) -> bytes:
 
 def main() -> int:
     if len(sys.argv) != 3:
-        print("usage: python scripts/make_test_pdf.py input.md output.pdf")
+        print("usage: python dev/scripts/make_test_pdf.py input.md output.pdf")
         return 2
 
     src = Path(sys.argv[1]).expanduser().resolve()

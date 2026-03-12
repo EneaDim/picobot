@@ -211,7 +211,7 @@ def build_pdf_bytes() -> bytes:
 
 
 def main() -> None:
-    out_dir = Path("testdata/kb")
+    out_dir = Path("tests/fixtures/data/kb")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "glass_orchard_story.pdf"
     out_path.write_bytes(build_pdf_bytes())

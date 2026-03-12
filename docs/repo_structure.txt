@@ -1,0 +1,172 @@
+PICOBOT — REPO STRUCTURE OVERVIEW
+=================================
+
+Scopo
+-----
+Questo file descrive la struttura del repository picobot dopo il riordino
+delle cartelle di supporto, con enfasi sulle responsabilità architetturali
+principali.
+
+Top-level structure
+-------------------
+
+picobot/
+  Codice applicativo principale del progetto.
+  Contiene runtime, orchestrazione, routing, tools, retrieval, UI, channels,
+  provider layer, session/memory e moduli di supporto.
+
+tests/
+  Test automatici del progetto.
+  Contiene test unitari, test strutturali e fixture.
+  Le fixture dati sono in tests/fixtures/data/.
+
+tests/fixtures/data/
+  Dati di test e asset sample.
+  Esempi: PDF per KB ingest/query, file di supporto per prove manuali o test.
+
+infra/
+  Materiale infrastrutturale locale.
+  Qui vivono componenti di servizio o integrazione che non sono codice
+  applicativo diretto.
+
+infra/searxng/
+  Config e materiale relativo a searxng / web search locale.
+
+dev/
+  Materiale operativo e di supporto allo sviluppo.
+
+dev/scripts/
+  Script operativi di bootstrap, provisioning, diagnosi, manutenzione,
+  helper locali e trial manuali.
+
+docs/
+  Documentazione progettuale e tecnica.
+  Questo file vive qui.
+
+.picobot/
+  Stato locale del progetto creato da init.
+  Include config locale, workspace, output e materiale runtime non da trattare
+  come sorgente principale del repository.
+
+Responsabilità principali dei moduli applicativi
+------------------------------------------------
+
+picobot/app/main.py
+  Entry point principale della CLI / bootstrap app.
+
+picobot/__main__.py
+  Entrypoint eseguibile via `python -m picobot`.
+
+picobot/agent/
+  Logica applicativa ad alto livello.
+  Include orchestrazione del turno, workflow dispatcher e gestione dei flow
+  principali (chat, kb grounded, podcast, ecc.).
+
+picobot/agent/application.py
+  Orchestrator applicativo principale.
+
+picobot/agent/turn_processor.py
+  Coordina il processamento di un turno: route, dispatch, memory update,
+  audio state e audit di base.
+
+picobot/agent/workflow_dispatcher.py
+  Esegue i workflow selezionati dal router: chat, kb_query, podcast,
+  youtube_summarizer, explicit tool, ecc.
+
+picobot/routing/
+  Router e policy di decisione.
+  Qui si decide se una richiesta va su chat, kb_query, podcast, youtube,
+  tool espliciti, ecc.
+
+picobot/routing/router_policy.py
+  Policy decisionale con guardrail.
+  Punto chiave per evitare route sbagliate o troppo permissive.
+
+picobot/retrieval/
+  Pipeline KB / RAG locale.
+  Ingest, query, retrieval dei chunk, supporto alla risposta grounded.
+
+picobot/tools/
+  Tool registry e tool implementations.
+  Esempi: tts, stt, python, web, file, yt_summary, news_digest.
+
+picobot/tools/tts.py
+  Sintesi vocale locale via backend configurato (sandbox docker/local).
+  Gestisce lingua, voice selection e output audio/meta.
+
+picobot/tools/stt.py
+  Speech-to-text locale.
+  Gestisce staging file audio, invocazione runtime STT, transcript e metadata.
+
+picobot/runtime/
+  Runtime event-driven.
+  Riceve inbound dal bus, apre i turni, pubblica status/eventi/output.
+
+picobot/runtime/agent_runtime.py
+  Runtime principale che connette inbound text, orchestrator e outbound.
+
+picobot/runtime/event_publisher.py
+  Pubblica eventi runtime, status e output verso il bus / channels.
+
+picobot/channels/
+  Adapter per le surface (CLI, Telegram, ecc.).
+
+picobot/channels/cli.py
+  Adapter CLI locale. Pubblica inbound text e riceve outbound messages.
+
+picobot/ui/
+  Surface CLI e command layer locale.
+  Gestisce rendering, comandi /help /status /kb /play ecc.
+
+picobot/ui/commands.py
+  Dispatcher dei comandi locali CLI.
+
+picobot/ui/command_handlers_kb.py
+  Gestione locale dei comandi KB deterministici (/kb, /kb ingest, /kb query).
+
+picobot/ui/terminal.py
+  Loop terminale e rendering status/output.
+
+picobot/session/
+  Stato sessione, memoria, state file e persistenza di sessione.
+
+picobot/providers/
+  Layer provider LLM.
+  Attualmente focalizzato su provider locali / Ollama e task routing provider.
+
+picobot/config/
+  Schema config, init config e supporto configurazione.
+
+Convenzioni introdotte con questo riordino
+------------------------------------------
+
+1. I dati di test vivono in tests/fixtures/data/
+2. I componenti infrastrutturali locali vivono in infra/
+3. Gli script operativi vivono in dev/scripts/
+4. I vecchi path top-level possono restare come symlink temporanei:
+   - testdata -> tests/fixtures/data
+   - scripts  -> dev/scripts
+   - searxng  -> infra/searxng
+
+Roadmap di pulizia futura
+-------------------------
+
+- Rimuovere i symlink legacy dopo aver aggiornato tutti i riferimenti.
+- Spostare eventuali file sparsi top-level nelle aree corrette.
+- Introdurre una cartella dedicata per il futuro context layer, ad esempio:
+  picobot/context/
+- Tenere separati:
+  - codice applicativo
+  - infrastruttura locale
+  - dati di test
+  - script operativi
+  - documentazione
+
+Note operative
+--------------
+
+Il workspace runtime rimane in .picobot/workspace e non va confuso con
+il codice sorgente del repo.
+
+I file dentro outputs/, .picobot/ e directory simili sono artefatti runtime
+o locali, non componenti architetturali centrali del sorgente.

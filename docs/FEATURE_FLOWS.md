@@ -28,7 +28,7 @@ Ciao, puoi spiegarmi a cosa serve questo progetto?
 ## 2. KB ingest esplicito
 
 ### Input
-/kb ingest testdata/kb/glass_orchard_story.pdf
+/kb ingest tests/fixtures/data/kb/glass_orchard_story.pdf
 
 ### Flusso
 1. Comando gestito localmente dalla CLI
@@ -277,8 +277,8 @@ oppure
 
 ## 15. Flusso di test KB consigliato
 
-1. Generare o verificare `testdata/kb/glass_orchard_story.pdf`
-2. `/kb ingest testdata/kb/glass_orchard_story.pdf`
+1. Generare o verificare `tests/fixtures/data/kb/glass_orchard_story.pdf`
+2. `/kb ingest tests/fixtures/data/kb/glass_orchard_story.pdf`
 3. `/kb query Dove si trova Serra Vetro?`
 4. `/kb query Cos'è Delta-Red?`
 5. `/kb use default`
