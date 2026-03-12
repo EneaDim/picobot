@@ -20,6 +20,7 @@ _STT_COMMAND_RX = re.compile(r"^\s*/stt\b(?:\s+(?P<audio_path>.+))?$", re.IGNORE
 _TTS_COMMAND_RX = re.compile(r"^\s*/tts\b(?:\s+(?P<text>.+))?$", re.IGNORECASE | re.DOTALL)
 _KB_INGEST_COMMAND_RX = re.compile(r"^\s*/kb\s+ingest\b", re.IGNORECASE)
 _PODCAST_COMMAND_RX = re.compile(r"^\s*/podcast\b", re.IGNORECASE)
+_KB_ASK_COMMAND_RX = re.compile(r"^\s*/kb\s+ask\b", re.IGNORECASE)
 
 _YT_RX = re.compile(r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/", re.IGNORECASE)
 
@@ -175,6 +176,36 @@ _KB_QUERY_HINT_RX = re.compile(
     re.IGNORECASE,
 )
 
+# Podcast: trigger molto più stretti.
+_PODCAST_INTENT_RX = re.compile(
+    r"\b("
+    r"podcast|"
+    r"episodio|"
+    r"episode|"
+    r"audio longform|"
+    r"long-form audio|"
+    r"genera un podcast|"
+    r"crea un podcast|"
+    r"fammi un podcast|"
+    r"make a podcast|"
+    r"generate a podcast|"
+    r"produce a podcast"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_PODCAST_REQUEST_RX = re.compile(
+    r"\b("
+    r"genera un podcast(?: su)?|"
+    r"crea un podcast(?: su)?|"
+    r"fammi un podcast(?: su)?|"
+    r"make a podcast(?: about)?|"
+    r"generate a podcast(?: about)?|"
+    r"produce a podcast(?: about)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def _extract_explicit_tool(text: str) -> tuple[str, dict] | None:
     match = _EXPLICIT_TOOL_RX.match(text or "")
@@ -214,6 +245,18 @@ def _looks_like_greeting(text: str) -> bool:
 
 def _looks_like_tts_request(text: str) -> bool:
     return bool(_TTS_INTENT_RX.search(text or ""))
+
+
+def _looks_like_podcast_request(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if _PODCAST_COMMAND_RX.match(raw):
+        return True
+    # Domande normali non devono diventare podcast.
+    if "?" in raw and not _PODCAST_REQUEST_RX.search(raw):
+        return False
+    return bool(_PODCAST_REQUEST_RX.search(raw))
 
 
 def _normalize_tts_text(text: str) -> str | None:
@@ -322,7 +365,7 @@ def _looks_like_kb_query_request(text: str) -> bool:
     raw = (text or "").strip()
     if not raw:
         return False
-    return bool(_KB_QUERY_HINT_RX.search(raw))
+    return bool(_KB_QUERY_HINT_RX.search(raw)) or bool(_KB_ASK_COMMAND_RX.match(raw))
 
 
 def _extract_python_slash_args(text: str) -> dict | None:
@@ -582,6 +625,9 @@ class RouterPolicy:
                 _looks_like_kb_query_request(user_text)
                 or (ctx.has_kb and ctx.kb_enabled and _looks_like_kb_question(user_text))
             ):
+                continue
+
+            if record.name == "podcast" and not _looks_like_podcast_request(user_text):
                 continue
 
             if text_generation_request and record.kind == "tool":

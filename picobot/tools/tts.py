@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from picobot.prompts import detect_language
 from picobot.tools.base import ToolSpec, tool_error, tool_ok
 from picobot.tools.paths import get_runtime_tool_bin, sibling_lib_dirs
 from picobot.tools.terminal_tool import TerminalToolBase
@@ -15,9 +17,89 @@ from picobot.tools.terminal_tool import TerminalToolBase
 
 class TTSArgs(BaseModel):
     text: str = Field(..., min_length=1)
-    lang: str = Field(default="it")
+    lang: str = Field(default="auto")
     voice_id: str | None = Field(default=None)
     output_path: str | None = Field(default=None)
+
+
+_EN_WORD_RX = re.compile(
+    r"\b("
+    r"what|why|when|where|who|how|"
+    r"are|is|do|does|did|"
+    r"the|this|that|these|those|"
+    r"you|your|we|they|he|she|it|"
+    r"bro|man|please|thanks|thank|"
+    r"hello|hi|hey|good|morning|evening|night|"
+    r"working|doing|make|build|run|write|read|play|"
+    r"agent|local-first|system|systems"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_IT_WORD_RX = re.compile(
+    r"\b("
+    r"che|cosa|come|quando|dove|chi|perché|perche|"
+    r"sei|sono|siamo|fai|faccio|fa|"
+    r"il|lo|la|gli|le|un|una|"
+    r"tu|voi|noi|loro|"
+    r"ciao|salve|buongiorno|buonasera|"
+    r"grazie|prego|"
+    r"scrivi|leggi|esegui|genera|crea|"
+    r"sistema|sistemi|agente|agenti"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_lang(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw or raw == "auto":
+        return "auto"
+    if raw.startswith("it"):
+        return "it"
+    if raw.startswith("en"):
+        return "en"
+    return raw
+
+
+def _heuristic_lang(text: str) -> str | None:
+    raw = " ".join(str(text or "").strip().split())
+    if not raw:
+        return None
+
+    en_score = len(_EN_WORD_RX.findall(raw))
+    it_score = len(_IT_WORD_RX.findall(raw))
+
+    if en_score > it_score and en_score > 0:
+        return "en"
+    if it_score > en_score and it_score > 0:
+        return "it"
+
+    # fallback ultrabreve: presenza forte di parole funzione inglesi
+    lowered = raw.lower()
+    if lowered.startswith(("what ", "why ", "when ", "where ", "how ")):
+        return "en"
+    if lowered.startswith(("che ", "cosa ", "come ", "quando ", "dove ", "perché ", "perche ")):
+        return "it"
+
+    return None
+
+
+def _infer_tts_lang(text: str, requested_lang: str | None) -> str:
+    normalized = _normalize_lang(requested_lang)
+    if normalized != "auto":
+        return normalized
+
+    heuristic = _heuristic_lang(text)
+    if heuristic in {"it", "en"}:
+        return heuristic
+
+    detected = detect_language((text or "").strip(), default="it")
+    detected = _normalize_lang(detected)
+    if detected in {"it", "en"}:
+        return detected
+
+    return "it"
 
 
 def _default_voice_for_lang(cfg, lang: str) -> str:
@@ -104,7 +186,6 @@ def _local_executable_exists(value: str) -> bool:
 
 def _runtime_path(runner: TerminalToolBase, host_path: Path, *, purpose: str) -> str:
     if runner.backend == "docker":
-        # Nel backend docker il modello vive nel runtime container e non va mappato dal workspace host.
         host_str = str(host_path)
         if host_str.startswith("/opt/picobot/"):
             return host_str
@@ -128,7 +209,7 @@ def synthesize_speech(
     cfg,
     text: str,
     *,
-    lang: str = "it",
+    lang: str = "auto",
     voice_id: str | None = None,
     output_path: str | None = None,
     output_dir: str | None = None,
@@ -139,8 +220,10 @@ def synthesize_speech(
     if not str(text or "").strip():
         raise ValueError("text is empty")
 
+    effective_lang = _infer_tts_lang(str(text), lang)
+
     piper_bin = get_runtime_tool_bin(cfg, "piper", "piper")
-    model_path = _pick_model(cfg, lang, voice_id=voice_id)
+    model_path = _pick_model(cfg, effective_lang, voice_id=voice_id)
 
     runner = TerminalToolBase(
         cfg=cfg,
@@ -158,7 +241,7 @@ def synthesize_speech(
 
     final_output = _build_output_path(
         runner,
-        lang=lang,
+        lang=effective_lang,
         output_path=output_path,
         output_dir=output_dir,
         file_stem=file_stem,
@@ -216,8 +299,8 @@ def synthesize_speech(
                 "backend": runner.backend,
                 "engine": "piper",
                 "audio_path": str(final_output),
-                "language": lang,
-                "voice_id": voice_id or _default_voice_for_lang(cfg, lang),
+                "language": effective_lang,
+                "voice_id": voice_id or _default_voice_for_lang(cfg, effective_lang),
                 "model_path": model_path,
                 "text_len": len(str(text)),
             },
@@ -243,9 +326,11 @@ def make_tts_tool(cfg=None) -> ToolSpec:
 
             backend = "unknown"
             meta_path = str(Path(audio_path).with_suffix(".tts.meta.json"))
+            language = "auto"
             try:
                 payload = json.loads(Path(meta_path).read_text(encoding="utf-8"))
                 backend = str(payload.get("backend") or "unknown")
+                language = str(payload.get("language") or "auto")
             except Exception:
                 pass
 
@@ -254,15 +339,16 @@ def make_tts_tool(cfg=None) -> ToolSpec:
                     "audio_path": audio_path,
                     "backend": backend,
                     "meta_path": meta_path,
+                    "language": language,
                 },
-                language=args.lang,
+                language=language,
             )
         except Exception as e:
             return tool_error(str(e))
 
     return ToolSpec(
         name="tts",
-        description="Generate speech audio using Piper via the configured sandbox backend.",
+        description="Text-to-speech synthesis using the configured sandbox backend.",
         schema=TTSArgs,
         handler=_handler,
     )

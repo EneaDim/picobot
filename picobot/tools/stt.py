@@ -56,6 +56,9 @@ def _stage_audio_into_workspace(runner: TerminalToolBase, audio_path: str | Path
 
 def _runtime_path(runner: TerminalToolBase, host_path: Path, *, purpose: str) -> str:
     if runner.backend == "docker":
+        host_str = str(host_path)
+        if host_str.startswith("/opt/picobot/"):
+            return host_str
         try:
             return runner.map_host_path(host_path)
         except Exception as exc:
@@ -70,6 +73,46 @@ def _runtime_bin(runner: TerminalToolBase, value: str) -> str:
     return str(Path(raw).expanduser().resolve()) if ("/" in raw or "\\" in raw or raw.startswith(".")) else raw
 
 
+def _normalize_lang(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return "auto"
+    if raw.startswith("it"):
+        return "it"
+    if raw.startswith("en"):
+        return "en"
+    return raw
+
+
+def _infer_lang_from_sidecar(audio_path: Path) -> str | None:
+    candidates = [
+        audio_path.with_suffix(".tts.meta.json"),
+        audio_path.with_suffix(".stt.meta.json"),
+        audio_path.with_suffix(".meta.json"),
+    ]
+
+    for candidate in candidates:
+        try:
+            if not candidate.exists():
+                continue
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                continue
+
+            lang = (
+                payload.get("language")
+                or payload.get("lang")
+                or payload.get("detected_language")
+            )
+            lang = _normalize_lang(lang)
+            if lang != "auto":
+                return lang
+        except Exception:
+            continue
+
+    return None
+
+
 async def transcribe_audio_file(
     cfg,
     *,
@@ -77,14 +120,16 @@ async def transcribe_audio_file(
     lang: str = "auto",
 ) -> STTResult:
     backend_name = "whisper.cpp"
-    cli = get_runtime_tool_bin(cfg, "whisper_cpp_cli", "whisper-cli")
+
+    cli = get_runtime_tool_bin(cfg, "whisper_cpp_cli", "whisper")
+
     model = str(getattr(getattr(getattr(cfg, "tools", None), "whisper", None), "model", "") or "").strip()
     if not model:
         model = str(get_tool_model(cfg, "whisper_cpp", "/opt/picobot/models/whisper/ggml-small.bin") or "").strip()
 
     runner = TerminalToolBase(
         cfg=cfg,
-        allowed_bins=[cli or "whisper-cli"],
+        allowed_bins=[cli or "whisper"],
         timeout_s=300,
         max_output_bytes=200_000,
     )
@@ -92,21 +137,23 @@ async def transcribe_audio_file(
     if runner.backend == "local" and not _local_executable_exists(cli):
         return STTResult(
             text="",
-            language=lang,
+            language=_normalize_lang(lang),
             backend=backend_name,
             ok=False,
             detail="whisper.cpp CLI not available",
         )
 
     model_path = Path(model).expanduser().resolve()
-    if not model_path.exists() or not model_path.is_file():
-        return STTResult(
-            text="",
-            language=lang,
-            backend=backend_name,
-            ok=False,
-            detail="whisper model not available",
-        )
+
+    if runner.backend != "docker":
+        if not model_path.exists() or not model_path.is_file():
+            return STTResult(
+                text="",
+                language=_normalize_lang(lang),
+                backend=backend_name,
+                ok=False,
+                detail="whisper model not available",
+            )
 
     try:
         staged_audio = _stage_audio_into_workspace(runner, audio_path)
@@ -115,11 +162,17 @@ async def transcribe_audio_file(
     except Exception as exc:
         return STTResult(
             text="",
-            language=lang,
+            language=_normalize_lang(lang),
             backend=backend_name,
             ok=False,
             detail=str(exc),
         )
+
+    effective_lang = _normalize_lang(lang)
+    if effective_lang == "auto":
+        inferred_lang = _infer_lang_from_sidecar(staged_audio)
+        if inferred_lang:
+            effective_lang = inferred_lang
 
     transcript_txt = staged_audio.with_suffix(".txt")
     transcript_meta = staged_audio.with_suffix(".stt.meta.json")
@@ -131,7 +184,7 @@ async def transcribe_audio_file(
         transcript_meta.unlink()
 
     cmd = [
-        _runtime_bin(runner, cli or "whisper-cli"),
+        _runtime_bin(runner, cli or "whisper"),
         "-m",
         runtime_model,
         "-f",
@@ -140,14 +193,14 @@ async def transcribe_audio_file(
         "-of",
         transcript_base,
     ]
-    if lang and str(lang).lower() != "auto":
-        cmd.extend(["-l", str(lang)])
+    if effective_lang != "auto":
+        cmd.extend(["-l", effective_lang])
 
     res = runner.run_cmd(cmd, prefix="[stt]", timeout_s=300)
     if res.returncode != 0:
         return STTResult(
             text="",
-            language=lang,
+            language=effective_lang,
             backend=backend_name,
             ok=False,
             detail=(res.stderr or res.stdout or "whisper.cpp failed").strip(),
@@ -156,7 +209,7 @@ async def transcribe_audio_file(
     if not transcript_txt.exists():
         return STTResult(
             text="",
-            language=lang,
+            language=effective_lang,
             backend=backend_name,
             ok=False,
             detail="transcript file not produced",
@@ -169,8 +222,10 @@ async def transcribe_audio_file(
                 "backend": runner.backend,
                 "engine": backend_name,
                 "audio_path": str(staged_audio),
-                "language": lang,
+                "language": effective_lang,
                 "text_path": str(transcript_txt),
+                "model_path": model,
+                "runtime_cli": cli,
             },
             ensure_ascii=False,
             indent=2,
@@ -180,7 +235,7 @@ async def transcribe_audio_file(
 
     return STTResult(
         text=text,
-        language=lang,
+        language=effective_lang,
         backend=runner.backend,
         ok=True,
         detail="",
