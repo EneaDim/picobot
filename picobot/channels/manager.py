@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Dict
 
-from picobot.bus.events import OutboundMessage
+from picobot.bus.events import OutboundMessage, RuntimeEvent
 from picobot.bus.queue import MessageBus
 from picobot.channels.base import Channel
 
@@ -23,12 +23,14 @@ class ChannelManager:
 
     - registra channel adapter
     - dispatch outbound verso i canali
+    - dispatch runtime verso i canali che li supportano
     """
 
     def __init__(self, *, bus: MessageBus) -> None:
         self.bus = bus
         self.channels: Dict[str, Channel] = {}
-        self._unsubscribe = None
+        self._unsubscribe_outbound = None
+        self._unsubscribe_runtime = None
 
     def register(self, channel: Channel) -> None:
         logger.info("Registering channel: %s", channel.name)
@@ -36,19 +38,25 @@ class ChannelManager:
         _debug(f"registered channel={channel.name}")
 
     async def start(self) -> None:
-        self._unsubscribe = self.bus.subscribe(
+        self._unsubscribe_outbound = self.bus.subscribe(
             "outbound.*",
             self._dispatch_outbound,
         )
-        _debug("subscribed to outbound.*")
+        self._unsubscribe_runtime = self.bus.subscribe(
+            "runtime.*",
+            self._dispatch_runtime,
+        )
+        _debug("subscribed to outbound.* and runtime.*")
 
         for ch in self.channels.values():
             _debug(f"starting channel={ch.name}")
             await ch.start()
 
     async def stop(self) -> None:
-        if self._unsubscribe:
-            self._unsubscribe()
+        if self._unsubscribe_outbound:
+            self._unsubscribe_outbound()
+        if self._unsubscribe_runtime:
+            self._unsubscribe_runtime()
 
         for ch in self.channels.values():
             try:
@@ -78,3 +86,30 @@ class ChannelManager:
             _debug(f"delivered outbound to channel={channel_name}")
         except Exception:
             logger.exception("Channel outbound delivery failed")
+
+    async def _dispatch_runtime(self, message) -> None:
+        if not isinstance(message, RuntimeEvent):
+            _debug(f"ignored non-RuntimeEvent type={type(message).__name__}")
+            return
+
+        channel_name = message.channel
+        _debug(
+            f"dispatch runtime type={message.message_type} "
+            f"channel={channel_name} corr={message.correlation_id}"
+        )
+
+        channel = self.channels.get(channel_name)
+        if not channel:
+            _debug(f"missing channel for runtime={channel_name}")
+            return
+
+        handler = getattr(channel, "handle_runtime", None)
+        if handler is None:
+            _debug(f"channel={channel_name} has no handle_runtime")
+            return
+
+        try:
+            await handler(message)
+            _debug(f"delivered runtime to channel={channel_name}")
+        except Exception:
+            logger.exception("Channel runtime delivery failed")
