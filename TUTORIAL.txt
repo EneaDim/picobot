@@ -1,0 +1,337 @@
+PICOBOT COMPLETE CLI TUTORIAL
+=============================
+
+This tutorial walks through ALL main features of Picobot.
+
+It is designed to test:
+
+• CLI commands
+• routing system
+• knowledge base
+• retrieval
+• sandbox tools
+• YouTube integration
+• web tools
+• Python execution
+• TTS/STT
+• podcast generation
+• runtime debug tracing
+
+------------------------------------------------
+1. STARTING PICOBOT
+------------------------------------------------
+
+Start Picobot from the project root:
+
+    python -m picobot
+
+Enable runtime debug view:
+
+    export PICOBOT_DEBUG_CLI=1
+
+Disable debug view:
+
+    export PICOBOT_DEBUG_CLI=0
+
+Debug mode shows internal events like:
+
+- routing
+- retrieval
+- tool execution
+- runtime state
+
+
+------------------------------------------------
+2. BASIC CLI COMMANDS
+------------------------------------------------
+
+Show available commands:
+
+    /help
+
+Check runtime status:
+
+    /status
+
+Exit Picobot:
+
+    /exit
+    /quit
+
+
+------------------------------------------------
+3. TOOL DISCOVERY
+------------------------------------------------
+
+List all registered tools:
+
+    /tools
+
+This shows all runtime tools available to the agent.
+
+
+------------------------------------------------
+4. ROUTING INSPECTION
+------------------------------------------------
+
+Check how the router would interpret a message without executing it:
+
+    /route summarize this article about AI
+
+You should see which workflow or tool would be selected.
+
+
+------------------------------------------------
+5. SESSION MEMORY
+------------------------------------------------
+
+Show session memory:
+
+    /mem
+
+Show conversation history:
+
+    /mem tail
+
+Show summarized conversation memory:
+
+    /mem summary
+
+Show extracted facts:
+
+    /mem facts
+
+Clear memory:
+
+    /mem clean
+
+
+------------------------------------------------
+6. KNOWLEDGE BASE
+------------------------------------------------
+
+Show current KB:
+
+    /kb
+
+List all knowledge bases:
+
+    /kb list
+
+Switch KB:
+
+    /kb use default
+
+Ingest a document:
+
+    /kb ingest ./docs/example.pdf
+
+
+------------------------------------------------
+7. KNOWLEDGE BASE QUERY
+------------------------------------------------
+
+Run deterministic query:
+
+    /kb query What is Verilator?
+
+Ask a question grounded on KB + LLM:
+
+    /kb ask Explain how Verilator works.
+
+
+------------------------------------------------
+8. WEB SEARCH
+------------------------------------------------
+
+Fetch a webpage or search result:
+
+    /fetch https://example.com
+
+or
+
+    /fetch latest NVIDIA GPU news
+
+Picobot will fetch content and summarize it.
+
+
+------------------------------------------------
+9. NEWS SUMMARIZER
+------------------------------------------------
+
+Get news digest:
+
+    /news AI chip startups
+
+Picobot collects articles and summarizes them.
+
+
+------------------------------------------------
+10. YOUTUBE SUMMARY
+------------------------------------------------
+
+Summarize a YouTube video:
+
+    /yt https://www.youtube.com/watch?v=F-dBBOxEqE0
+
+This will:
+
+1. extract subtitles
+2. build transcript
+3. summarize content
+
+
+------------------------------------------------
+11. PYTHON TOOL
+------------------------------------------------
+
+Execute Python code safely in the sandbox:
+
+    /python print("hello world")
+
+Short alias:
+
+    /py 2 + 2
+
+
+------------------------------------------------
+12. FILE TOOL
+------------------------------------------------
+
+Read a file from workspace:
+
+    /file ./README.md
+
+Picobot will display or summarize file contents.
+
+
+------------------------------------------------
+13. TEXT TO SPEECH
+------------------------------------------------
+
+Generate audio:
+
+    /tts Hello this is a Picobot audio test
+
+The file will be generated using Piper.
+
+
+------------------------------------------------
+14. PLAY AUDIO
+------------------------------------------------
+
+Play the last generated audio:
+
+    /play
+
+Play a specific file:
+
+    /play ./audio/output.wav
+
+
+------------------------------------------------
+15. SPEECH TO TEXT
+------------------------------------------------
+
+Transcribe audio:
+
+    /stt ./recording.wav
+
+Uses Whisper.
+
+
+------------------------------------------------
+16. PODCAST GENERATION
+------------------------------------------------
+
+Generate a podcast episode:
+
+    /podcast The future of artificial intelligence
+
+Picobot will:
+
+1. research the topic
+2. generate a script
+3. synthesize audio
+
+
+------------------------------------------------
+17. NORMAL CHAT
+------------------------------------------------
+
+You can also talk normally without slash commands.
+
+Examples:
+
+    Explain what RISC-V is
+    Summarize this concept: neural networks
+    Write a short story about Mars
+
+
+------------------------------------------------
+18. DEBUG MODE
+------------------------------------------------
+
+Enable debug:
+
+    export PICOBOT_DEBUG_CLI=1
+
+You will see runtime events like:
+
+    route selected
+    retrieval started
+    tool started
+    tool completed
+    turn completed
+
+
+------------------------------------------------
+19. STATUS LINE
+------------------------------------------------
+
+With debug disabled, the CLI shows a dynamic status line:
+
+    ⏳ sending to bus
+    ⏳ routing
+    ⏳ thinking
+    ⏳ executing tool
+
+This updates on the same line.
+
+
+------------------------------------------------
+20. ERROR HANDLING
+------------------------------------------------
+
+Try invalid commands:
+
+    /yt invalid-url
+    /python import nonexistent_module
+
+Picobot should return readable errors.
+
+
+------------------------------------------------
+21. FEATURE CHECKLIST
+------------------------------------------------
+
+Verify all features:
+
+[ ] CLI commands work
+[ ] routing works
+[ ] knowledge base works
+[ ] retrieval works
+[ ] web search works
+[ ] YouTube summarization works
+[ ] Python sandbox works
+[ ] file tool works
+[ ] TTS works
+[ ] STT works
+[ ] podcast generator works
+[ ] debug runtime visible
+[ ] status line works
+
+
+------------------------------------------------
+END OF TUTORIAL
+------------------------------------------------
