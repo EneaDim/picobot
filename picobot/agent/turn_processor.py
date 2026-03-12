@@ -1,24 +1,20 @@
 from __future__ import annotations
 
 from typing import Any
+import os
+
+DEBUG_RUNTIME = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug(msg: str) -> None:
+    if DEBUG_RUNTIME:
+        print(f"[debug][turn] {msg}")
 
 from picobot.agent.models import RuntimeHooks, StatusCb, TurnResult
 from picobot.session.manager import Session
 
 
 class TurnProcessor:
-    """
-    Owner del turn pipeline.
-
-    Responsabilità:
-    - route selection
-    - dispatch tool/workflow
-    - emissione hook turn-level
-    - arricchimento TurnResult con route/audit metadata
-
-    La persistenza memoria e il context assembly stanno in MemoryContextService.
-    """
-
     def __init__(self, orchestrator) -> None:
         self.orchestrator = orchestrator
 
@@ -38,12 +34,20 @@ class TurnProcessor:
             return TurnResult(content="", action="noop", reason="empty input")
 
         if status:
-            await status("🧭 Decido il percorso migliore…")
+            await status("🧭 Analizzo l'input e seleziono la route…")
 
         route = self.orchestrator.route_selector.select(
             session=session,
             user_text=text,
         )
+        _debug(
+            f"selected route action={route.route_action} "
+            f"name={route.route_name} source={route.route_source} "
+            f"score={route.route_score:.3f} kb_probe={route.kb_probe_score}"
+        )
+        if route.route_candidates:
+            for item in route.route_candidates[:4]:
+                _debug(f"candidate {item}")
         decision = route.raw_decision
         kb_name = str(session.get_state().get("kb_name") or self.orchestrator.cfg.default_kb_name or "default").strip()
 
@@ -64,7 +68,10 @@ class TurnProcessor:
         if status:
             route_label = f"{route.route_action or '?'}:{route.route_name or '?'}"
             route_source = route.route_source or "unknown"
-            await status(f"🧭 Route scelta: {route_label} [{route_source}]")
+            extra = ""
+            if route.kb_probe_score is not None:
+                extra = f" kb={route.kb_probe_score:.2f}"
+            await status(f"🧭 Route: {route_label} [{route_source}]{extra}")
 
         if route.route_action == "tool":
             result = await self.orchestrator.workflow_dispatcher.explicit_tool(

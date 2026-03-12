@@ -125,6 +125,13 @@ class AgentRuntime:
 
         _debug(f"user_text={user_text!r}")
 
+        # Status anticipato: il runtime ha preso in carico il messaggio.
+        await self.events.publish_status(
+            inbound=message,
+            session=session,
+            text="📥 Messaggio ricevuto, apro il turno…",
+        )
+
         await self.events.publish_turn_started(
             inbound=message,
             session=session,

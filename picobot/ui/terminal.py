@@ -88,6 +88,12 @@ class TerminalUI:
         self._status_text = ""
         self._status_since = 0.0
 
+    def _redraw_status_line(self) -> None:
+        if not self._status_text:
+            return
+        self._status_visible = True
+        print(f"\r{self._status_text}", end="", flush=True)
+
     def show_status(self, text: str) -> None:
         line = f"⏳ {str(text or '').strip()}"
         if not line.strip():
@@ -108,6 +114,25 @@ class TerminalUI:
             if remaining > 0:
                 time.sleep(remaining)
         self._wipe_status_line()
+
+    def print_debug(self, text: str) -> None:
+        body = str(text or "").rstrip()
+        if not body:
+            return
+
+        had_status = self._status_visible
+        saved_status = self._status_text
+
+        if had_status:
+            print("\r\033[2K", end="", flush=True)
+            self._status_visible = False
+
+        for line in body.splitlines():
+            print(f"🐞 {line}", flush=True)
+
+        if saved_status:
+            self._status_text = saved_status
+            self._redraw_status_line()
 
     def print_info(self, text: str) -> None:
         self.clear_status()
@@ -160,18 +185,9 @@ class TerminalUI:
                 break
 
             if getattr(msg, "correlation_id", None) != correlation_id:
-                if debug_cb:
-                    debug_cb(
-                        f"skip message type={getattr(msg, 'message_type', '?')} "
-                        f"corr={getattr(msg, 'correlation_id', None)} expected={correlation_id}"
-                    )
                 continue
 
             kind, text = outbound_kind_and_text(msg)
-
-            if debug_cb:
-                payload = getattr(msg, "payload", {}) or {}
-                debug_cb(f"recv type={getattr(msg, 'message_type', '?')} payload_keys={list(payload.keys())}")
 
             if kind == "status":
                 if text:

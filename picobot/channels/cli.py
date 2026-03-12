@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 from uuid import uuid4
 
-from picobot.bus.events import OutboundMessage, inbound_text
+from picobot.bus.events import OutboundMessage, inbound_text, outbound_status
 from picobot.bus.queue import MessageBus
 from picobot.channels.base import Channel
 
@@ -15,6 +15,7 @@ class CLIChannel(Channel):
 
     Responsabilità:
     - pubblicare inbound.text sul bus
+    - emettere uno status immediato locale-side prima dell'elaborazione runtime
     - ricevere outbound.* dal ChannelManager
     - rendere disponibili i messaggi in uscita al loop CLI
     """
@@ -39,11 +40,24 @@ class CLIChannel(Channel):
         metadata: dict[str, Any] | None = None,
     ) -> str:
         corr = correlation_id or uuid4().hex
+        sid = (session_id or self.default_session_id)
+
+        # Status immediato lato CLI: compare prima ancora che il runtime inizi davvero.
+        await self.bus.publish(
+            outbound_status(
+                channel=self.name,
+                chat_id="cli",
+                session_id=sid,
+                text="📨 Messaggio inviato al bus…",
+                correlation_id=corr,
+                causation_id=None,
+            )
+        )
 
         message = inbound_text(
             channel=self.name,
             chat_id="cli",
-            session_id=(session_id or self.default_session_id),
+            session_id=sid,
             text=text,
             correlation_id=corr,
             metadata=metadata or {},

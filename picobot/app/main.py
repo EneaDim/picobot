@@ -156,6 +156,87 @@ async def run_cli() -> None:
         _debug("message bus stopped")
 
 
+
+
+def _format_debug_runtime_event(message) -> str | None:
+    mtype = str(getattr(message, "message_type", "") or "")
+    payload = dict(getattr(message, "payload", {}) or {})
+
+    if mtype == "runtime.turn_started":
+        return f"[runtime] turn_started text_len={payload.get('text_len', '?')}"
+
+    if mtype == "runtime.turn.route_selected":
+        lines = [
+            f"[router] selected {payload.get('route_action', '?')}:{payload.get('route_name', '?')}"
+            f" source={payload.get('route_source', '?')}"
+            f" score={payload.get('route_score', 0.0):.3f}"
+        ]
+        reason = payload.get("route_reason")
+        if reason:
+            lines.append(f'[router] reason="{reason}"')
+        candidates = list(payload.get("route_candidates", []) or [])
+        if candidates:
+            lines.append("[router] candidates:")
+            for item in candidates[:4]:
+                lines.append(f"  {item}")
+        return "\n".join(lines)
+
+    if mtype == "runtime.retrieval.started":
+        return (
+            f"[retrieval] started kb={payload.get('kb_name', '?')} "
+            f"top_k={payload.get('top_k', '?')}"
+        )
+
+    if mtype == "runtime.retrieval.completed":
+        if payload.get("ok") is False:
+            return f"[retrieval] failed error={payload.get('error', '?')}"
+        return (
+            f"[retrieval] completed hits={payload.get('hits', 0)} "
+            f"context_chars={payload.get('context_chars', 0)}"
+        )
+
+    if mtype == "runtime.turn.context_built":
+        return (
+            f"[context] workflow={payload.get('workflow_name', '?')} "
+            f"history={payload.get('history_messages_count', 0)} "
+            f"facts={payload.get('memory_facts_count', 0)} "
+            f"summary={'yes' if payload.get('summary_present') else 'no'} "
+            f"retrieval={'yes' if payload.get('retrieval_present') else 'no'}"
+        )
+
+    if mtype == "runtime.tool.started":
+        return (
+            f"[tool] started name={payload.get('tool_name', '?')} "
+            f"workflow={payload.get('workflow_name', '?')}"
+        )
+
+    if mtype == "runtime.tool.completed":
+        return (
+            f"[tool] completed name={payload.get('tool_name', '?')} "
+            f"ok={payload.get('ok', True)}"
+        )
+
+    if mtype == "runtime.tool.failed":
+        return (
+            f"[tool] failed name={payload.get('tool_name', '?')} "
+            f"error={payload.get('error', '?')}"
+        )
+
+    if mtype == "runtime.turn_completed":
+        return (
+            f"[turn] completed action={payload.get('action', '?')} "
+            f"reason={payload.get('reason', '?')} "
+            f"provider={payload.get('provider_name', '-') or '-'} "
+            f"hits={payload.get('retrieval_hits', 0)} "
+            f"audio={'yes' if payload.get('has_audio') else 'no'}"
+        )
+
+    if mtype == "runtime.turn_failed":
+        return f"[turn] failed error={payload.get('error', '?')}"
+
+    return None
+
+
 def main() -> None:
     asyncio.run(run_cli())
 
