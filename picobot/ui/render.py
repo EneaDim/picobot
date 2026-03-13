@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
+from textwrap import indent
 
 
 def banner_lines() -> list[str]:
     return [
-        "Picobot CLI",
-        "Digita /help per i comandi disponibili.",
+        "🤖 Picobot CLI",
+        "✨ Tools, workflows, and LLM orchestration in one terminal.",
+        "Type /help to explore commands.",
     ]
 
 
@@ -14,44 +15,31 @@ def prompt_label() -> str:
     return "❯ "
 
 
-def info_block(text: str) -> str:
-    body = (text or "").strip()
-    return f"ℹ️ Info\n{body}" if body else "ℹ️ Info"
+def _box(title: str, body: str) -> str:
+    clean = (body or "").rstrip()
+    if not clean:
+        return title
+    return f"{title}\n{clean}"
 
 
 def assistant_block(text: str) -> str:
-    body = (text or "").strip()
-    return f"🤖 Picobot\n{body}" if body else "🤖 Picobot"
+    return _box("🤖 Picobot", str(text or "").rstrip())
 
 
 def error_block(text: str) -> str:
-    body = (text or "").strip()
-    return f"⚠️ Errore\n{body}" if body else "⚠️ Errore"
+    return _box("❌ Error", str(text or "").rstrip())
+
+
+def info_block(text: str) -> str:
+    return _box("ℹ️ Info", str(text or "").rstrip())
 
 
 def audio_block(text: str) -> str:
-    body = (text or "").strip()
-    return f"🎧 Audio\n{body}" if body else "🎧 Audio"
+    return _box("🎧 Audio", str(text or "").rstrip())
 
 
-def _format_audio_payload(payload: dict) -> str:
-    audio_path = str(payload.get("audio_path") or "").strip()
-    caption = str(payload.get("caption") or "").strip()
-    backend = str(payload.get("backend") or "").strip()
-
-    lines: list[str] = []
-    if caption:
-        lines.append(caption)
-    if audio_path:
-        lines.append(f"Path: {audio_path}")
-    if backend:
-        lines.append(f"Backend: {backend}")
-
-    if not lines and payload:
-        for k, v in payload.items():
-            lines.append(f"{k}: {v}")
-
-    return "\n".join(lines).strip()
+def tool_block(text: str) -> str:
+    return _box("🛠 Tool", str(text or "").rstrip())
 
 
 def outbound_kind_and_text(msg) -> tuple[str, str]:
@@ -62,12 +50,43 @@ def outbound_kind_and_text(msg) -> tuple[str, str]:
         return "status", str(payload.get("text") or "").strip()
 
     if mtype == "outbound.error":
-        return "error", str(payload.get("text") or "").strip()
-
-    if mtype == "outbound.text":
-        return "assistant", str(payload.get("text") or "").strip()
+        text = str(payload.get("text") or payload.get("error") or "").strip()
+        return "error", text
 
     if mtype == "outbound.audio":
-        return "audio", _format_audio_payload(payload)
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            path = str(payload.get("audio_path") or "").strip()
+            if path:
+                text = f"Generated audio\nPath: {path}"
+        return "audio", text
+
+    if mtype == "outbound.tool":
+        text = str(payload.get("text") or "").strip()
+        return "tool", text
+
+    if mtype == "outbound.text":
+        text = str(payload.get("text") or "").strip()
+        return "assistant", text
 
     return "unknown", ""
+
+
+STATUS_EMOJI_MAP = {
+    "bus": "📨",
+    "turn": "📥",
+    "route": "🧭",
+    "thinking": "🧠",
+    "retrieve": "🔎",
+    "tool": "🛠",
+    "tts": "🔊",
+    "stt": "🎙",
+    "youtube": "📺",
+    "python": "🐍",
+    "fetch": "🌐",
+    "audio": "🎧",
+    "memory": "🧠",
+    "done": "✅",
+    "error": "❌",
+    "end": "🏁",
+}

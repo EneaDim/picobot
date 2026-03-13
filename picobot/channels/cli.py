@@ -11,14 +11,14 @@ from picobot.channels.base import Channel
 
 class CLIChannel(Channel):
     """
-    Channel adapter per la CLI.
+    CLI channel adapter.
 
-    Responsabilità:
-    - pubblicare inbound.text sul bus
-    - emettere uno status immediato locale-side prima dell'elaborazione runtime
-    - ricevere outbound.* dal ChannelManager
-    - ricevere runtime.* dal ChannelManager
-    - rendere disponibili i messaggi in uscita al loop CLI
+    Responsibilities:
+    - publish inbound.text on the bus
+    - emit an immediate local-side status event before runtime processing
+    - receive outbound.* from the ChannelManager
+    - receive runtime.* from the ChannelManager
+    - expose outgoing messages to the CLI loop
     """
 
     def __init__(self, *, bus: MessageBus, session_id: str = "default") -> None:
@@ -48,7 +48,7 @@ class CLIChannel(Channel):
                 channel=self.name,
                 chat_id="cli",
                 session_id=sid,
-                text="📨 Messaggio inviato al bus…",
+                text="📨 Sending to bus…",
                 correlation_id=corr,
                 causation_id=None,
             )

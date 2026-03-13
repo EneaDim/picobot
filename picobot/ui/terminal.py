@@ -14,6 +14,7 @@ from picobot.ui.render import (
     info_block,
     outbound_kind_and_text,
     prompt_label,
+    tool_block,
 )
 from picobot.ui.command_catalog import COMMAND_WORDS
 
@@ -38,16 +39,78 @@ except Exception:
 DEBUG_RUNTIME = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _short_status_from_runtime(msg) -> str | None:
+    mtype = str(getattr(msg, "message_type", "") or "")
+    payload = dict(getattr(msg, "payload", {}) or {})
+
+    if mtype == "runtime.turn_started":
+        return "📥 Turn started…"
+
+    if mtype == "runtime.turn.route_selected":
+        action = str(payload.get("route_action") or "").strip()
+        name = str(payload.get("route_name") or "").strip()
+        if action and name:
+            if action == "tool":
+                return f"🧭 Route → tool:{name}"
+            if action == "workflow":
+                return f"🧭 Route → workflow:{name}"
+            return f"🧭 Route → {action}:{name}"
+        return "🧭 Routing…"
+
+    if mtype == "runtime.retrieval.started":
+        return "🔎 Retrieving context…"
+
+    if mtype == "runtime.retrieval.completed":
+        return "🔎 Retrieval completed"
+
+    if mtype == "runtime.turn.context_built":
+        return "🧩 Context ready…"
+
+    if mtype == "runtime.tool.started":
+        tool_name = str(payload.get("tool_name") or "").strip()
+        if tool_name == "tts":
+            return "🔊 Generating audio…"
+        if tool_name == "stt":
+            return "🎙 Transcribing audio…"
+        if tool_name == "yt_summary" or tool_name == "yt_transcript":
+            return "📺 Processing YouTube content…"
+        if tool_name == "python":
+            return "🐍 Running Python…"
+        if tool_name == "fetch":
+            return "🌐 Fetching content…"
+        if tool_name:
+            return f"🛠 Running {tool_name}…"
+        return "🛠 Running tool…"
+
+    if mtype == "runtime.tool.completed":
+        ok = payload.get("ok")
+        return "✅ Tool completed" if ok is not False else "❌ Tool failed"
+
+    if mtype == "runtime.tool.failed":
+        return "❌ Tool failed"
+
+    if mtype == "runtime.memory.updated":
+        return "🧠 Updating memory…"
+
+    if mtype == "runtime.turn_completed":
+        return "🏁 Completed"
+
+    if mtype == "runtime.turn_failed":
+        return "❌ Failed"
+
+    return None
+
+
 def _format_runtime_event(msg) -> str | None:
     mtype = str(getattr(msg, "message_type", "") or "")
     payload = dict(getattr(msg, "payload", {}) or {})
 
     if mtype == "runtime.turn_started":
-        return f"📥 turno aperto · text_len={payload.get('text_len', '?')}"
+        return f"📥 turn     started    text_len={payload.get('text_len', '?')}"
 
     if mtype == "runtime.turn.route_selected":
         lines = [
-            f"🧭 route={payload.get('route_action', '?')}:{payload.get('route_name', '?')}",
+            f"🧭 route    selected   {payload.get('route_action', '?')}:{payload.get('route_name', '?')}",
             f"   source={payload.get('route_source', '?')} score={payload.get('route_score', 0.0):.3f}",
         ]
         reason = payload.get("route_reason")
@@ -62,21 +125,21 @@ def _format_runtime_event(msg) -> str | None:
 
     if mtype == "runtime.retrieval.started":
         return (
-            f"🔎 retrieval start · kb={payload.get('kb_name', '?')} "
+            f"🔎 retrieval started   kb={payload.get('kb_name', '?')} "
             f"top_k={payload.get('top_k', '?')}"
         )
 
     if mtype == "runtime.retrieval.completed":
         if payload.get("ok") is False:
-            return f"🔎 retrieval failed · error={payload.get('error', '?')}"
+            return f"❌ retrieval failed    error={payload.get('error', '?')}"
         return (
-            f"🔎 retrieval done · hits={payload.get('hits', 0)} "
+            f"🔎 retrieval done      hits={payload.get('hits', 0)} "
             f"context_chars={payload.get('context_chars', 0)}"
         )
 
     if mtype == "runtime.turn.context_built":
         return (
-            f"🧩 context built · workflow={payload.get('workflow_name', '?')} "
+            f"🧩 context   built     workflow={payload.get('workflow_name', '?')} "
             f"history={payload.get('history_messages_count', 0)} "
             f"facts={payload.get('memory_facts_count', 0)} "
             f"summary={'yes' if payload.get('summary_present') else 'no'} "
@@ -85,31 +148,32 @@ def _format_runtime_event(msg) -> str | None:
 
     if mtype == "runtime.tool.started":
         return (
-            f"🛠 tool start · name={payload.get('tool_name', '?')} "
+            f"🛠 tool      started   name={payload.get('tool_name', '?')} "
             f"workflow={payload.get('workflow_name', '?')}"
         )
 
     if mtype == "runtime.tool.completed":
         return (
-            f"✅ tool done · name={payload.get('tool_name', '?')} "
+            f"✅ tool      done      name={payload.get('tool_name', '?')} "
             f"ok={payload.get('ok', True)}"
         )
 
     if mtype == "runtime.tool.failed":
         return (
-            f"❌ tool failed · name={payload.get('tool_name', '?')} "
+            f"❌ tool      failed    name={payload.get('tool_name', '?')} "
             f"error={payload.get('error', '?')}"
         )
 
     if mtype == "runtime.audio.generated":
-        return f"🔊 audio generated · path={payload.get('audio_path', '?')}"
+        return f"🎧 audio     generated path={payload.get('audio_path', '?')}"
 
     if mtype == "runtime.memory.updated":
-        return f"🧠 memory updated · facts={payload.get('facts_count', '?')}"
+        facts = payload.get("facts_count", "?")
+        return f"🧠 memory    updated   facts={facts}"
 
     if mtype == "runtime.turn_completed":
         return (
-            f"🏁 turn completed · action={payload.get('action', '?')} "
+            f"🏁 turn      completed action={payload.get('action', '?')} "
             f"reason={payload.get('reason', '?')} "
             f"provider={payload.get('provider_name', '-') or '-'} "
             f"hits={payload.get('retrieval_hits', 0)} "
@@ -117,7 +181,7 @@ def _format_runtime_event(msg) -> str | None:
         )
 
     if mtype == "runtime.turn_failed":
-        return f"💥 turn failed · error={payload.get('error', '?')}"
+        return f"❌ turn      failed    error={payload.get('error', '?')}"
 
     return None
 
@@ -130,7 +194,7 @@ class TerminalUI:
         self._status_visible = False
         self._status_text = ""
         self._status_since = 0.0
-        self._status_min_visible_sec = 0.35
+        self._status_min_visible_sec = 0.22
         self._runtime_debug_enabled = DEBUG_RUNTIME
 
         ui_cfg = getattr(cfg, "ui", None)
@@ -162,11 +226,13 @@ class TerminalUI:
     def print_banner(self, *, telegram_enabled: bool) -> None:
         for line in banner_lines():
             print(line)
+        print(f"🐞 Debug: {'ON' if self._runtime_debug_enabled else 'OFF'}")
+        print("🧠 Providers: Ollama, Gemini")
         if telegram_enabled:
-            print("Telegram channel abilitato.")
+            print("📨 Telegram channel enabled.")
 
         if not self._use_prompt_toolkit:
-            print("Nota: prompt_toolkit non attivo, quindi TAB/history/editing avanzato non sono disponibili.")
+            print("ℹ️ prompt_toolkit not active, so TAB/history/advanced editing are not available.")
 
     def _wipe_status_line(self) -> None:
         if not self._status_visible:
@@ -180,20 +246,20 @@ class TerminalUI:
         if not self._status_text:
             return
         self._status_visible = True
-        print(f"\r{self._status_text}", end="", flush=True)
+        print(f"\r⏳ {self._status_text}", end="", flush=True)
 
     def show_status(self, text: str) -> None:
-        line = f"⏳ {str(text or '').strip()}"
-        if not line.strip():
+        clean = str(text or "").strip()
+        if not clean:
             return
 
         if self._status_visible:
             print("\r\033[2K", end="", flush=True)
 
-        self._status_text = line
+        self._status_text = clean
         self._status_visible = True
         self._status_since = time.monotonic()
-        print(f"\r{line}", end="", flush=True)
+        print(f"\r⏳ {clean}", end="", flush=True)
 
     def clear_status(self) -> None:
         if self._status_visible:
@@ -211,10 +277,9 @@ class TerminalUI:
         if not body:
             return
 
-        had_status = self._status_visible
-        saved_status = self._status_text
+        saved_status = self._status_text if self._status_visible else ""
 
-        if had_status:
+        if self._status_visible:
             print("\r\033[2K", end="", flush=True)
             self._status_visible = False
 
@@ -240,6 +305,10 @@ class TerminalUI:
     def print_audio(self, text: str) -> None:
         self.clear_status()
         print(audio_block(text), flush=True)
+
+    def print_tool(self, text: str) -> None:
+        self.clear_status()
+        print(tool_block(text), flush=True)
 
     async def prompt(self) -> str:
         self.clear_status()
@@ -281,6 +350,10 @@ class TerminalUI:
             mtype = str(getattr(msg, "message_type", "") or "")
 
             if mtype.startswith("runtime."):
+                short = _short_status_from_runtime(msg)
+                if short:
+                    self.show_status(short)
+
                 if self._runtime_debug_enabled:
                     formatted = _format_runtime_event(msg)
                     if formatted:
@@ -301,6 +374,11 @@ class TerminalUI:
 
             if kind == "audio" and text:
                 self.print_audio(text)
+                saw_non_status = True
+                continue
+
+            if kind == "tool" and text:
+                self.print_tool(text)
                 saw_non_status = True
                 continue
 
