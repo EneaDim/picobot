@@ -285,22 +285,26 @@ def inbound_voice_note(
     audio_path: str,
     correlation_id: str | None = None,
     causation_id: str | None = None,
-    metadata: dict | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> InboundMessage:
+    import uuid
+    from datetime import datetime, timezone
+
     return InboundMessage(
+        source="telegram",
+        message_id=uuid.uuid4().hex,
+        created_at=datetime.now(timezone.utc),
         message_type="inbound.telegram.voice_note",
-        source=channel,
         channel=channel,
         chat_id=chat_id,
         session_id=session_id,
-        correlation_id=correlation_id,
+        correlation_id=correlation_id or uuid.uuid4().hex,
         causation_id=causation_id,
         payload={
             "audio_path": audio_path,
         },
         metadata=metadata or {},
     )
-
 
 def inbound_document(
     *,

@@ -11,6 +11,7 @@ from picobot.bus.events import (
 )
 from picobot.bus.queue import MessageBus
 from picobot.runtime.event_publisher import RuntimeEventPublisher
+from picobot.runtime.spoken_commands import spoken_text_to_command
 from picobot.session.manager import SessionManager
 
 
@@ -136,18 +137,35 @@ class TelegramInboundHandler:
             },
         )
 
+        spoken_cmd = spoken_text_to_command(transcript)
+        final_text = spoken_cmd or transcript
+
+        await self.events.publish_runtime_event(
+            inbound=message,
+            session_id=session.session_id,
+            event_type="runtime.telegram.voice_note.normalized",
+            payload={
+                "audio_path": audio_path,
+                "transcript": transcript,
+                "normalized_text": final_text,
+                "is_command": bool(spoken_cmd),
+            },
+        )
+
         await self.bus.publish(
             inbound_text(
                 channel=message.channel,
                 chat_id=str(message.chat_id),
                 session_id=session.session_id,
-                text=transcript,
+                text=final_text,
                 correlation_id=message.correlation_id,
                 causation_id=message.message_id,
                 metadata={
                     **dict(message.metadata or {}),
                     "origin": "telegram_voice_note",
                     "audio_path": audio_path,
+                    "voice_transcript": transcript,
+                    "voice_normalized_command": spoken_cmd or "",
                 },
             )
         )

@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from picobot.routing.schemas import RouteCandidate, RouteDecision, SessionRouteContext
 from picobot.runtime_config import cfg_get
+from picobot.routing.intent_hints import looks_like_current_events_news
 
 _EXPLICIT_TOOL_RX = re.compile(
     r"^\s*tool\s+([a-zA-Z0-9_:-]+)\s+(\{.*\})\s*$",

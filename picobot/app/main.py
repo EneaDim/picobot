@@ -11,6 +11,7 @@ from picobot.providers.ollama import OllamaProvider
 from picobot.runtime import AgentRuntime
 from picobot.ui.commands import handle_local_command
 from picobot.ui.terminal import TerminalUI
+from picobot.app.telegram_monitor import TelegramMirror
 
 
 DEBUG_CLI = os.getenv("PICOBOT_TRACE_INTERNAL", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -76,6 +77,8 @@ async def run_cli() -> None:
     )
 
     channel_manager = ChannelManager(bus=bus)
+    telegram_mirror = None
+    tg_channel = None
 
     cli_channel = CLIChannel(bus=bus, session_id="default")
     channel_manager.register(cli_channel)
@@ -88,6 +91,11 @@ async def run_cli() -> None:
                 bus=bus,
                 token=telegram_token,
                 download_dir=workspace / "telegram_uploads",
+                cfg=cfg,
+            )
+            tg_channel.bind_runtime_context(
+                channel_manager=channel_manager,
+                workspace=workspace,
             )
             channel_manager.register(tg_channel)
             _debug("Telegram channel registered")
@@ -99,6 +107,10 @@ async def run_cli() -> None:
     await runtime.start()
     _debug("runtime started")
     await channel_manager.start()
+    if telegram_enabled and DEBUG_CLI:
+        telegram_mirror = TelegramMirror(bus=bus, print_debug=ui.print_debug)
+        await telegram_mirror.start()
+        print("👀 Telegram monitor active.")
     _debug("channel manager started")
 
     ui.print_banner(telegram_enabled=telegram_enabled)
@@ -148,6 +160,8 @@ async def run_cli() -> None:
 
     finally:
         ui.clear_status()
+        if telegram_mirror is not None:
+            await telegram_mirror.stop()
         await channel_manager.stop()
         _debug("channel manager stopped")
         await runtime.stop()

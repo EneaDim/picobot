@@ -10,7 +10,7 @@ SANDBOX_CONTAINER_WORKSPACE ?= /workspace
 CONFIG_PATH ?= .picobot/config.json
 
 .PHONY: help venv install reinstall clean init init-force init-config init-config-force \
-        compile test run chat cli \
+        compile test run chat cli telegram telegram-nodebug telegram-check \
         sandbox-build sandbox-rebuild sandbox-up sandbox-down sandbox-status sandbox-logs sandbox-shell \
         tools-bootstrap tools-doctor tools-snapshot bootstrap \
         start start-nodebug stop check-config check-sandbox
@@ -30,6 +30,9 @@ help:
 	@echo "  run                - start picobot"
 	@echo "  chat               - alias of run"
 	@echo "  cli                - alias of run"
+	@echo "  telegram-check     - verify Telegram config/token"
+	@echo "  telegram           - sandbox-up + start picobot for Telegram with CLI debug enabled"
+	@echo "  telegram-nodebug   - sandbox-up + start picobot for Telegram without CLI debug"
 	@echo "  sandbox-build      - build docker sandbox image only if missing"
 	@echo "  sandbox-rebuild    - force rebuild docker sandbox image"
 	@echo "  sandbox-up         - start persistent sandbox container"
@@ -104,6 +107,9 @@ chat:
 
 cli:
 	$(PYTHON) -m picobot
+
+telegram-check:
+	$(PYTHON) scripts/telegram_check.py "$(CONFIG_PATH)"
 
 sandbox-build:
 	@mkdir -p "$(SANDBOX_WORKSPACE)"
@@ -183,6 +189,12 @@ start: sandbox-up
 	PICOBOT_DEBUG_CLI=1 $(PYTHON) -m picobot
 
 start-nodebug: sandbox-up
+	$(PYTHON) -m picobot
+
+telegram: sandbox-up telegram-check
+	PICOBOT_DEBUG_CLI=1 $(PYTHON) -m picobot
+
+telegram-nodebug: sandbox-up telegram-check
 	$(PYTHON) -m picobot
 
 stop: sandbox-down
