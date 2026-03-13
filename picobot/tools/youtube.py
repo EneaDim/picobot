@@ -13,7 +13,7 @@ from picobot.tools.terminal_tool import TerminalToolBase
 
 LLMSummarize = Callable[[str, str, str | None], Awaitable[str]]
 
-DEBUG_YT = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
+DEBUG_YT = os.getenv("PICOBOT_TRACE_INTERNAL", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class YTTranscriptArgs(BaseModel):
@@ -32,7 +32,7 @@ class YTSummaryArgs(BaseModel):
 
 def _debug_yt(msg: str) -> None:
     if DEBUG_YT:
-        print(f"[debug][youtube] {msg}")
+        print(f"[trace][youtube] {msg}")
 
 
 def _normalize_ytdlp_bin(ytdlp_bin: str) -> str:

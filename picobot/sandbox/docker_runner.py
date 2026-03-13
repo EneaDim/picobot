@@ -13,12 +13,12 @@ from typing import Iterable, Optional
 
 from picobot.tools.sandbox_exec import ExecResult
 
-DEBUG_DOCKER = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
+DEBUG_DOCKER = os.getenv("PICOBOT_TRACE_INTERNAL", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _debug_docker(msg: str) -> None:
     if DEBUG_DOCKER:
-        print(f"[debug][docker] {msg}")
+        print(f"[trace][docker] {msg}")
 
 @dataclass(frozen=True)
 class DockerSandboxRun:

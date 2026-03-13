@@ -17,12 +17,12 @@ from picobot.runtime.telegram_inbound_handler import TelegramInboundHandler
 from picobot.session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
-DEBUG_RUNTIME = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
+DEBUG_RUNTIME = os.getenv("PICOBOT_TRACE_INTERNAL", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _debug(msg: str) -> None:
     if DEBUG_RUNTIME:
-        print(f"[debug][runtime] {msg}")
+        print(f"[trace][runtime] {msg}")
 
 
 class AgentRuntime:

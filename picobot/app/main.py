@@ -13,12 +13,12 @@ from picobot.ui.commands import handle_local_command
 from picobot.ui.terminal import TerminalUI
 
 
-DEBUG_CLI = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
+DEBUG_CLI = os.getenv("PICOBOT_TRACE_INTERNAL", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _debug(msg: str) -> None:
     if DEBUG_CLI:
-        print(f"[debug] {msg}")
+        print(f"[trace] {msg}")
 
 
 def _get_telegram_settings(cfg) -> tuple[bool, str]:

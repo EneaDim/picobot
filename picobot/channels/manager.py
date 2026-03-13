@@ -9,12 +9,12 @@ from picobot.bus.queue import MessageBus
 from picobot.channels.base import Channel
 
 logger = logging.getLogger(__name__)
-DEBUG_RUNTIME = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
+DEBUG_RUNTIME = os.getenv("PICOBOT_TRACE_INTERNAL", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _debug(msg: str) -> None:
     if DEBUG_RUNTIME:
-        print(f"[debug][manager] {msg}")
+        print(f"[trace][manager] {msg}")
 
 
 class ChannelManager:

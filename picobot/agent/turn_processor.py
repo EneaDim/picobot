@@ -3,12 +3,12 @@ from __future__ import annotations
 from typing import Any
 import os
 
-DEBUG_RUNTIME = os.getenv("PICOBOT_DEBUG_CLI", "0").strip().lower() in {"1", "true", "yes", "on"}
+DEBUG_RUNTIME = os.getenv("PICOBOT_TRACE_INTERNAL", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _debug(msg: str) -> None:
     if DEBUG_RUNTIME:
-        print(f"[debug][turn] {msg}")
+        print(f"[trace][turn] {msg}")
 
 from picobot.agent.models import RuntimeHooks, StatusCb, TurnResult
 from picobot.session.manager import Session
