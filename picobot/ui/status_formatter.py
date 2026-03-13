@@ -6,7 +6,16 @@ def short_status_from_runtime(msg, *, channel: str = "cli") -> str | None:
     payload = dict(getattr(msg, "payload", {}) or {})
 
     if mtype == "runtime.turn_started":
-        return "📥 Turn started…"
+        return "📨 Received"
+
+    if mtype == "runtime.telegram.voice_note.received":
+        return "🎙 Voice received"
+
+    if mtype == "runtime.telegram.voice_note.transcribed":
+        return "🧠 Transcript ready"
+
+    if mtype == "runtime.telegram.voice_note.normalized":
+        return "🧭 Routing"
 
     if mtype == "runtime.turn.route_selected":
         action = str(payload.get("route_action") or "").strip()
@@ -60,7 +69,7 @@ def short_status_from_runtime(msg, *, channel: str = "cli") -> str | None:
         return "🧠 Updating memory…"
 
     if mtype == "runtime.turn_completed":
-        return "🏁 Completed"
+        return "✅ Completed"
 
     if mtype == "runtime.turn_failed":
         return "❌ Failed"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from picobot.prompts import system_base_context
 from picobot.config.schema import Config
@@ -25,13 +26,14 @@ class ContextBuilder:
     """
     Costruisce in modo esplicito il contesto per il modello.
 
-    Layer supportati:
-    1. session state
-    2. history
-    3. summary
-    4. memory facts
-    5. retrieval context
-    6. runtime context
+    Priorità applicata:
+    1. recent dialogue priority block
+    2. runtime context
+    3. session state
+    4. recent memory facts
+    5. summary
+    6. retrieval context
+    7. history messages
     """
 
     def __init__(self, cfg: Config, workspace: Path) -> None:
@@ -40,6 +42,45 @@ class ContextBuilder:
 
     def _repo(self, session: Session) -> MemoryRepository:
         return MemoryRepository(self.workspace, session)
+
+    def _recent_priority_block(self, history_messages: list[dict[str, str]], *, max_items: int = 4) -> str:
+        tail = history_messages[-max(0, max_items):]
+        if not tail:
+            return ""
+
+        lines = ["PRIORITY RECENT DIALOGUE (prefer this over older memory when conflicting):"]
+        for item in tail:
+            role = str(item.get("role") or "").strip() or "unknown"
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            lines.append(f"- {role}: {content}")
+        return "\n".join(lines).strip()
+
+    def _recent_facts(self, repo: MemoryRepository, *, limit: int = 8) -> list[str]:
+        facts_store = repo.facts
+
+        if hasattr(facts_store, "read_recent_items"):
+            items = list(facts_store.read_recent_items(limit=limit))
+            return [str(x).strip() for x in items if str(x).strip()]
+
+        rows = []
+        if hasattr(facts_store, "read_rows"):
+            try:
+                rows = list(facts_store.read_rows())
+            except Exception:
+                rows = []
+
+        if rows:
+            rows = sorted(
+                rows,
+                key=lambda row: str(row.get("updated_at") or ""),
+                reverse=True,
+            )
+            items = [str(row.get("content") or "").strip() for row in rows]
+            return [x for x in items if x][:limit]
+
+        return [str(x).strip() for x in facts_store.read_items() if str(x).strip()][:limit]
 
     def build_assembly(
         self,
@@ -55,9 +96,13 @@ class ContextBuilder:
         safe_history_turns = max(0, int(history_turns))
         history_messages = repo.history.read_recent_messages(limit=safe_history_turns * 2)
         summary = repo.summary.read_text()
-        facts = repo.facts.read_items()
+        facts = self._recent_facts(repo, limit=8)
         session_state = repo.state.read()
+
         runtime_items = list(runtime_context or [])
+        priority_block = self._recent_priority_block(history_messages, max_items=4)
+        if priority_block:
+            runtime_items = [priority_block, *runtime_items]
 
         model_context = ModelContext(
             system_prompt=system_base_context(lang),

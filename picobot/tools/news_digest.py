@@ -26,7 +26,12 @@ def make_news_digest_tool(cfg, workspace) -> ToolSpec:
                 language=args.language,
             )
         except WebSearchUnavailableError as e:
-            return tool_error(str(e))
+            detail = str(e).strip()
+            hint = (
+                "Backend news locale non configurato o non avviabile. "
+                "Controlla la cartella searxng/, il docker compose e la configurazione web_search."
+            )
+            return tool_error(f"{hint} Dettaglio: {detail}")
         except Exception as e:
             return tool_error(f"news digest failed: {e}")
 

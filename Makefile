@@ -13,6 +13,7 @@ CONFIG_PATH ?= .picobot/config.json
         compile test run chat cli telegram telegram-nodebug telegram-check \
         sandbox-build sandbox-rebuild sandbox-up sandbox-down sandbox-status sandbox-logs sandbox-shell \
         tools-bootstrap tools-doctor tools-snapshot bootstrap \
+        searxng-up searxng-down searxng-status searxng-logs \
         start start-nodebug stop check-config check-sandbox
 
 help:
@@ -79,13 +80,13 @@ check-sandbox:
 	@$(DOCKER) image inspect "$(SANDBOX_IMAGE)" >/dev/null 2>&1 && echo "✅ sandbox image OK: $(SANDBOX_IMAGE)" || (echo "❌ sandbox image missing: $(SANDBOX_IMAGE)"; exit 1)
 	@$(DOCKER) ps --format '{{.Names}}' | grep -Fxq "$(SANDBOX_NAME)" && echo "✅ sandbox container OK: $(SANDBOX_NAME)" || (echo "❌ sandbox container not running: $(SANDBOX_NAME)"; exit 1)
 
-init: init-config sandbox-rebuild sandbox-up tools-bootstrap tools-doctor check-config check-sandbox
+init: init-config sandbox-rebuild sandbox-up searxng-up tools-bootstrap tools-doctor check-config check-sandbox searxng-check
 	@echo
 	@echo "========================================"
 	@echo "✅ Picobot init completed successfully"
 	@echo "========================================"
 
-init-force: init-config-force sandbox-rebuild sandbox-up tools-bootstrap tools-doctor check-config check-sandbox
+init-force: init-config-force sandbox-rebuild sandbox-up searxng-up tools-bootstrap tools-doctor check-config check-sandbox searxng-check
 	@echo
 	@echo "========================================"
 	@echo "✅ Picobot init-force completed"
@@ -185,16 +186,30 @@ tools-doctor: sandbox-up
 tools-snapshot: sandbox-up
 	$(PYTHON) -m picobot.tools.init_tools --config "$(CONFIG_PATH)" snapshot
 
-start: sandbox-up
+start: sandbox-up searxng-up
 	PICOBOT_DEBUG_CLI=1 $(PYTHON) -m picobot
 
-start-nodebug: sandbox-up
+start-nodebug: sandbox-up searxng-up
 	$(PYTHON) -m picobot
 
-telegram: sandbox-up telegram-check
+telegram: sandbox-up searxng-up telegram-check
 	PICOBOT_DEBUG_CLI=1 $(PYTHON) -m picobot
 
-telegram-nodebug: sandbox-up telegram-check
+telegram-nodebug: sandbox-up searxng-up telegram-check
 	$(PYTHON) -m picobot
 
 stop: sandbox-down
+
+
+searxng-up:
+	cd searxng && docker compose up -d
+
+searxng-down:
+	cd searxng && docker compose down
+
+searxng-status:
+	cd searxng && docker compose ps
+
+searxng-logs:
+	cd searxng && docker compose logs --tail=200
+

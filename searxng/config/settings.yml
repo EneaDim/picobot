@@ -1,0 +1,23 @@
+use_default_settings: true
+
+general:
+  instance_name: "Picobot SearXNG"
+  debug: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "it"
+  formats:
+    - html
+    - json
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: "picobot-local-dev-secret-key-change-me"
+  limiter: false
+  public_instance: false
+
+ui:
+  static_use_hash: true

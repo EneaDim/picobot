@@ -170,23 +170,29 @@ class DocsQdrantStore:
             ]
         )
 
-        if hasattr(self.client, "query_points"):
-            result = self.client.query_points(
-                collection_name=self.collection,
-                query=vector,
-                query_filter=query_filter,
-                limit=limit,
-                with_payload=True,
-            )
-            return self._normalize_query_points_result(result)
+        try:
+            if hasattr(self.client, "query_points"):
+                result = self.client.query_points(
+                    collection_name=self.collection,
+                    query=vector,
+                    query_filter=query_filter,
+                    limit=limit,
+                    with_payload=True,
+                )
+                return self._normalize_query_points_result(result)
 
-        if hasattr(self.client, "search"):
-            return self.client.search(
-                collection_name=self.collection,
-                query_vector=vector,
-                query_filter=query_filter,
-                limit=limit,
-                with_payload=True,
-            )
+            if hasattr(self.client, "search"):
+                return self.client.search(
+                    collection_name=self.collection,
+                    query_vector=vector,
+                    query_filter=query_filter,
+                    limit=limit,
+                    with_payload=True,
+                )
 
-        raise RuntimeError("This qdrant-client version supports neither query_points nor search")
+            raise RuntimeError("This qdrant-client version supports neither query_points nor search")
+        except Exception as exc:
+            message = str(exc).lower()
+            if "collection" in message and "not found" in message:
+                return []
+            raise

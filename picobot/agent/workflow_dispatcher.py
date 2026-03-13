@@ -11,7 +11,7 @@ from picobot.session.manager import Session
 from picobot.tools.base import ToolError
 from picobot.tools.news_digest import NewsDigestArgs
 from picobot.tools.podcast import detect_podcast_request, generate_podcast
-from picobot.tools.youtube import YTSummaryArgs
+from picobot.tools.youtube import YTSummaryArgs, YTTranscriptArgs
 
 if TYPE_CHECKING:
     from picobot.agent.application import Orchestrator
@@ -585,6 +585,84 @@ class WorkflowDispatcher:
             audit={"workflow_name": "youtube_summarizer", "url": url},
         )
 
+
+    async def youtube_transcript(
+        self,
+        *,
+        user_text: str,
+        lang: str,
+        status: StatusCb | None,
+        hooks: RuntimeHooks | None = None,
+    ) -> TurnResult:
+        url = _first_youtube_url(user_text)
+        if not url:
+            return TurnResult(
+                content=("Non trovo un URL YouTube valido." if lang == "it" else "I cannot find a valid YouTube URL."),
+                action="workflow",
+                reason="youtube url missing",
+                audit={"workflow_name": "youtube_transcript"},
+            )
+
+        if status:
+            await status("📺 Recupero il transcript completo del video…")
+
+        try:
+            youtube_cfg = getattr(self.orchestrator.cfg.tools, "youtube", None)
+            prefer_sub_langs = list(getattr(youtube_cfg, "prefer_sub_langs", []) or [])
+
+            lang_norm = (lang or "").strip().lower()
+            preferred = []
+            if lang_norm.startswith("it"):
+                preferred.extend(["it", "it-IT", "it_IT"])
+            elif lang_norm.startswith("en"):
+                preferred.extend(["en", "en-US", "en_US"])
+            preferred.extend(prefer_sub_langs)
+            preferred.extend(["it", "it-IT", "en", "en-US"])
+
+            dedup = []
+            seen = set()
+            for item in preferred:
+                key = str(item).strip()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                dedup.append(key)
+
+            result = await self._execute_tool(
+                "yt_transcript",
+                YTTranscriptArgs(url=url, lang=lang, prefer_sub_langs=dedup).model_dump(),
+                hooks=hooks,
+                workflow_name="youtube_transcript",
+            )
+        except Exception as e:
+            return TurnResult(
+                content=(f"Errore YouTube transcript: {e}" if lang == "it" else f"YouTube transcript error: {e}"),
+                action="workflow",
+                reason="youtube transcript tool exception",
+                audit={"workflow_name": "youtube_transcript", "url": url},
+            )
+
+        if not result.get("ok"):
+            err = str(result.get("error") or "yt_transcript failed")
+            return TurnResult(
+                content=(f"Transcript YouTube fallito: {err}" if lang == "it" else f"YouTube transcript failed: {err}"),
+                action="workflow",
+                reason="youtube transcript tool failed",
+                audit={"workflow_name": "youtube_transcript", "url": url},
+            )
+
+        data = result.get("data") or {}
+        transcript = str(data.get("transcript") or "").strip()
+        if not transcript:
+            transcript = str(data.get("transcript_preview") or "").strip()
+
+        return TurnResult(
+            content=transcript or ("Nessun transcript disponibile." if lang == "it" else "No transcript available."),
+            action="workflow",
+            reason="youtube_transcript",
+            audit={"workflow_name": "youtube_transcript", "url": url},
+        )
+
     async def podcast(
         self,
         *,
@@ -675,6 +753,8 @@ class WorkflowDispatcher:
             return await self.news_digest(user_text=user_text, lang=lang, status=status, hooks=hooks)
         if name == "youtube_summarizer":
             return await self.youtube_summarizer(user_text=user_text, lang=lang, status=status, hooks=hooks)
+        if name == "youtube_transcript":
+            return await self.youtube_transcript(user_text=user_text, lang=lang, status=status, hooks=hooks)
         if name == "podcast":
             return await self.podcast(session=session, user_text=user_text, lang=lang, status=status, hooks=hooks)
         if name == "kb_ingest_pdf":

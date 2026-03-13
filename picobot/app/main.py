@@ -80,7 +80,8 @@ async def run_cli() -> None:
     telegram_mirror = None
     tg_channel = None
 
-    cli_channel = CLIChannel(bus=bus, session_id="default")
+    current_session_id = "default"
+    cli_channel = CLIChannel(bus=bus, session_id=current_session_id)
     channel_manager.register(cli_channel)
     _debug("CLI channel registered")
 
@@ -133,11 +134,15 @@ async def run_cli() -> None:
                 raw_text=user_text,
                 cfg=cfg,
                 workspace=workspace,
-                session_id="default",
+                session_id=current_session_id,
                 orchestrator=runtime.orchestrator,
             )
 
             if cmd.handled:
+                if cmd.new_session_id:
+                    current_session_id = cmd.new_session_id
+                    setattr(cli_channel, "default_session_id", current_session_id)
+                    setattr(cli_channel, "session_id", current_session_id)
                 if cmd.text:
                     ui.print_info(cmd.text)
                 if cmd.should_exit:
@@ -148,7 +153,7 @@ async def run_cli() -> None:
 
             correlation_id = await cli_channel.send_text(
                 text=user_text,
-                session_id="default",
+                session_id=current_session_id,
             )
             _debug(f"sent inbound.text correlation_id={correlation_id} text={user_text!r}")
 

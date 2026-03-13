@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -98,8 +99,50 @@ class TelegramChannel(Channel):
         self._debug_trace_enabled = bool(getattr(telegram_cfg, "debug_terminal", False))
 
         self._status_state: dict[str, dict] = {}
+        self._session_overrides: dict[str, str] = {}
+
+    def _session_state_file(self) -> Path:
+        path = Path(self.workspace).expanduser().resolve() / "memory" / "telegram_chat_sessions.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _load_session_overrides(self) -> None:
+        if self._session_overrides:
+            return
+        path = self._session_state_file()
+        if not path.exists():
+            self._session_overrides = {}
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                self._session_overrides = {
+                    str(k): str(v).strip()
+                    for k, v in payload.items()
+                    if str(v).strip()
+                }
+            else:
+                self._session_overrides = {}
+        except Exception:
+            self._session_overrides = {}
+
+    def _save_session_overrides(self) -> None:
+        path = self._session_state_file()
+        path.write_text(
+            json.dumps(self._session_overrides, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _set_session_for_chat(self, chat_id: int | str, session_id: str) -> None:
+        self._load_session_overrides()
+        self._session_overrides[str(chat_id)] = str(session_id or "").strip()
+        self._save_session_overrides()
 
     def _session_id_for_chat(self, chat_id: int | str) -> str:
+        self._load_session_overrides()
+        override = str(self._session_overrides.get(str(chat_id)) or "").strip()
+        if override:
+            return override
         return f"{self.default_session_prefix}-{chat_id}"
 
     def bind_runtime_context(self, *, channel_manager=None, orchestrator=None, workspace=None) -> None:
@@ -108,6 +151,7 @@ class TelegramChannel(Channel):
             self.orchestrator = orchestrator
         if workspace is not None:
             self.workspace = Path(workspace).expanduser().resolve()
+            self._session_overrides = {}
 
     def bind_channel_manager(self, channel_manager) -> None:
         self.bind_runtime_context(channel_manager=channel_manager)
@@ -143,6 +187,8 @@ class TelegramChannel(Channel):
             BotCommand("status", "Show runtime status"),
             BotCommand("tools", "List tools"),
             BotCommand("mem", "Show or clean memory"),
+            BotCommand("session", "Show or change current session"),
+            BotCommand("session", "Show or change current session"),
             BotCommand("kb", "Knowledge base commands"),
             BotCommand("news", "Summarize news"),
             BotCommand("yt", "Summarize a YouTube video"),
@@ -229,15 +275,20 @@ class TelegramChannel(Channel):
             text="📨 Received…",
         )
 
+        current_session_id = self._session_id_for_chat(chat.id)
+
         result = handle_command(
             text,
             cfg=self.cfg,
             workspace=Path(self.workspace),
-            session_id=self._session_id_for_chat(chat.id),
+            session_id=current_session_id,
             orchestrator=self.orchestrator,
         )
 
         if getattr(result, "handled", False):
+            if getattr(result, "new_session_id", None):
+                self._set_session_for_chat(chat.id, str(result.new_session_id))
+
             bus_text = str(getattr(result, "bus_text", "") or "").strip()
             direct_text = str(getattr(result, "text", "") or "").strip()
 
@@ -249,8 +300,10 @@ class TelegramChannel(Channel):
                     user_id=getattr(user, "id", None),
                     username=getattr(user, "username", None),
                 )
-                if local_correlation_id in self._status_state:
-                    self._status_state[runtime_corr] = self._status_state.pop(local_correlation_id)
+                self._rebind_status_state(
+                    old_correlation_id=local_correlation_id,
+                    new_correlation_id=runtime_corr,
+                )
                 return
 
             await self._finalize_status_message(
@@ -268,8 +321,10 @@ class TelegramChannel(Channel):
             user_id=getattr(user, "id", None),
             username=getattr(user, "username", None),
         )
-        if local_correlation_id in self._status_state:
-            self._status_state[runtime_corr] = self._status_state.pop(local_correlation_id)
+        self._rebind_status_state(
+            old_correlation_id=local_correlation_id,
+            new_correlation_id=runtime_corr,
+        )
 
     async def _on_voice_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
@@ -346,6 +401,17 @@ class TelegramChannel(Channel):
             }
             self._status_state[correlation_id] = state
         return state
+
+
+    def _rebind_status_state(self, *, old_correlation_id: str, new_correlation_id: str) -> None:
+        if not old_correlation_id or not new_correlation_id or old_correlation_id == new_correlation_id:
+            return
+        if old_correlation_id in self._status_state:
+            self._status_state[new_correlation_id] = self._status_state.pop(old_correlation_id)
+
+    def _drop_status_state(self, correlation_id: str) -> None:
+        if correlation_id:
+            self._status_state.pop(correlation_id, None)
 
     async def _ensure_status_message(self, *, chat_id: str, correlation_id: str, text: str) -> None:
         if self._app is None:
@@ -425,6 +491,21 @@ class TelegramChannel(Channel):
             if line:
                 state["trace"].append(line)
 
+        terminal_event_types = {
+            "runtime.turn_completed": True,
+            "runtime.audio.generated": True,
+            "runtime.turn_failed": False,
+            "runtime.tool.failed": False,
+            "runtime.retrieval.failed": False,
+        }
+        mtype = str(getattr(message, "message_type", "") or "")
+        if mtype in terminal_event_types:
+            await self._finalize_status_message(
+                chat_id=chat_id,
+                correlation_id=correlation_id,
+                success=bool(terminal_event_types[mtype]),
+            )
+
     async def handle_outbound(self, message: OutboundMessage) -> None:
         if self._app is None:
             logger.warning("Telegram outbound dropped: app not started")
@@ -465,7 +546,7 @@ class TelegramChannel(Channel):
                 await self._finalize_status_message(chat_id=chat_id, correlation_id=correlation_id, success=True)
                 await bot.send_message(chat_id=chat_id, text=text)
                 if correlation_id:
-                    self._status_state.pop(correlation_id, None)
+                    self._drop_status_state(correlation_id)
                 return
 
             if mtype == "outbound.error":
@@ -476,7 +557,7 @@ class TelegramChannel(Channel):
                 await self._finalize_status_message(chat_id=chat_id, correlation_id=correlation_id, success=False)
                 await bot.send_message(chat_id=chat_id, text=f"❌ Error\n{text}")
                 if correlation_id:
-                    self._status_state.pop(correlation_id, None)
+                    self._drop_status_state(correlation_id)
                 return
 
             if mtype == "outbound.audio":
@@ -493,7 +574,7 @@ class TelegramChannel(Channel):
                         caption=caption,
                     )
                 if correlation_id:
-                    self._status_state.pop(correlation_id, None)
+                    self._drop_status_state(correlation_id)
                 return
 
         except Exception:

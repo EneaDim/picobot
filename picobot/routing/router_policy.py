@@ -6,7 +6,12 @@ from urllib.parse import urlparse
 
 from picobot.routing.schemas import RouteCandidate, RouteDecision, SessionRouteContext
 from picobot.runtime_config import cfg_get
-from picobot.routing.intent_hints import looks_like_current_events_news
+from picobot.routing.intent_hints import (
+    looks_like_current_events_news,
+    looks_like_personal_memory_query,
+    looks_like_youtube_summary_request,
+    looks_like_youtube_transcript_request,
+)
 
 _EXPLICIT_TOOL_RX = re.compile(
     r"^\s*tool\s+([a-zA-Z0-9_:-]+)\s+(\{.*\})\s*$",
@@ -21,6 +26,7 @@ _STT_COMMAND_RX = re.compile(r"^\s*/stt\b(?:\s+(?P<audio_path>.+))?$", re.IGNORE
 _TTS_COMMAND_RX = re.compile(r"^\s*/tts\b(?:\s+(?P<text>.+))?$", re.IGNORECASE | re.DOTALL)
 _KB_INGEST_COMMAND_RX = re.compile(r"^\s*/kb\s+ingest\b", re.IGNORECASE)
 _PODCAST_COMMAND_RX = re.compile(r"^\s*/podcast\b", re.IGNORECASE)
+_YT_COMMAND_RX = re.compile(r"^\s*/yt\b(?:\s+.*)?$", re.IGNORECASE)
 _KB_ASK_COMMAND_RX = re.compile(r"^\s*/kb\s+ask\b", re.IGNORECASE)
 
 _YT_RX = re.compile(r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/", re.IGNORECASE)
@@ -475,6 +481,16 @@ class RouterPolicy:
                 candidates=[],
             )
 
+        if looks_like_personal_memory_query(stripped):
+            return RouteDecision(
+                action="workflow",
+                name="chat",
+                reason="personal-memory heuristic",
+                args={},
+                score=0.99,
+                candidates=[],
+            )
+
         if _PY_COMMAND_RX.match(stripped):
             py_args = _extract_python_slash_args(stripped)
             if py_args is None:
@@ -595,11 +611,27 @@ class RouterPolicy:
                 candidates=[],
             )
 
-        if _YT_RX.search(stripped):
+        if _YT_COMMAND_RX.match(stripped):
+            workflow_name = "youtube_transcript" if looks_like_youtube_transcript_request(stripped) else "youtube_summarizer"
+            workflow_reason = "explicit /yt command"
             return RouteDecision(
                 action="workflow",
-                name="youtube_summarizer",
-                reason="youtube url detected",
+                name=workflow_name,
+                reason=workflow_reason,
+                args={},
+                score=1.0,
+                candidates=[],
+            )
+
+        if _YT_RX.search(stripped):
+            workflow_name = "youtube_transcript" if looks_like_youtube_transcript_request(stripped) else "youtube_summarizer"
+            workflow_reason = "youtube url detected"
+            if looks_like_youtube_summary_request(stripped):
+                workflow_name = "youtube_summarizer"
+            return RouteDecision(
+                action="workflow",
+                name=workflow_name,
+                reason=workflow_reason,
                 args={},
                 score=1.0,
                 candidates=[],

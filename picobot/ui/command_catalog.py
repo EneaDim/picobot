@@ -18,6 +18,10 @@ COMMAND_SPECS: list[CommandSpec] = [
     CommandSpec("/route <testo>", "Mostra la route deterministica senza eseguire il turno"),
     CommandSpec("/play", "Riproduce l'ultimo audio generato nella sessione"),
     CommandSpec("/play <path>", "Riproduce un file audio specifico"),
+    CommandSpec("/session", "Mostra sessione corrente e disponibili"),
+    CommandSpec("/session list", "Lista sessioni"),
+    CommandSpec("/session use <id>", "Cambia sessione corrente"),
+    CommandSpec("/session new <id>", "Crea/seleziona una nuova sessione"),
     CommandSpec("/mem", "Mostra session state"),
     CommandSpec("/mem tail", "Mostra history"),
     CommandSpec("/mem summary", "Mostra summary"),
@@ -47,7 +51,11 @@ def command_words() -> list[str]:
 
 def build_help_text() -> str:
     sections = {
-        "Sistema": ["/help", "/exit", "/quit", "/status", "/tools", "/route <testo>", "/play", "/play <path>"],
+        "Sistema": [
+            "/help", "/exit", "/quit", "/status", "/tools", "/route <testo>",
+            "/play", "/play <path>", "/session", "/session list",
+            "/session use <id>", "/session new <id>",
+        ],
         "Memoria": ["/mem", "/mem tail", "/mem summary", "/mem facts", "/mem clean"],
         "KB": [
             "/kb",
@@ -76,6 +84,7 @@ def build_help_text() -> str:
         "Nota: /kb query resta locale e deterministico.",
         "Nota: /kb ask usa retrieval + LLM grounded sulla KB attiva.",
         "Nota: /play è locale alla CLI. Su Telegram l'audio viene inviato direttamente come outbound audio.",
+        "Nota: /session cambia la sessione attiva del canale corrente.",
         "",
     ]
 

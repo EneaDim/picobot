@@ -1,0 +1,12 @@
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: picobot-searxng
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/etc/searxng:rw
+    environment:
+      - BASE_URL=http://localhost:8080/
+      - INSTANCE_NAME=Picobot SearXNG
+    restart: unless-stopped

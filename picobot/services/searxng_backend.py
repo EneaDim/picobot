@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import time
+from html import unescape
 from pathlib import Path
+from urllib.parse import urljoin
 
 import httpx
 
@@ -86,6 +89,8 @@ class SearxngBackend:
                 "User-Agent": "Mozilla/5.0 (compatible; PicobotLocalSearch/1.0)",
                 "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
                 "Accept-Language": "it,en;q=0.8",
+                "X-Forwarded-For": "127.0.0.1",
+                "X-Real-IP": "127.0.0.1",
             },
         )
 
@@ -190,8 +195,99 @@ class SearxngBackend:
         with self._client(self.timeout_s) as client:
             return client.get(f"{self.base_url}/search", params=params)
 
-    def _load_results(self, res: httpx.Response, *, query: str, category: str, language: str):
+    def _request_search_html(self, *, query: str, category: str, language: str):
+        params = {
+            "q": query,
+            "categories": category,
+            "language": language,
+        }
+        with self._client(self.timeout_s) as client:
+            return client.get(f"{self.base_url}/search", params=params)
+
+    def _strip_html(self, value: str) -> str:
+        text = re.sub(r"<[^>]+>", " ", value or "")
+        text = unescape(text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
+
+    def _parse_html_results(self, html: str, *, limit: int) -> list[SearchResult]:
+        text = html or ""
+        out: list[SearchResult] = []
+        seen: set[str] = set()
+
+        anchor_re = re.compile(
+            r'<a[^>]+class="[^"]*result__url[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        title_re = re.compile(
+            r'<h3[^>]*class="[^"]*result_header[^"]*"[^>]*>.*?<a[^>]*>(.*?)</a>.*?</h3>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        content_re = re.compile(
+            r'<p[^>]+class="[^"]*content[^"]*"[^>]*>(.*?)</p>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        engine_re = re.compile(
+            r'<span[^>]+class="[^"]*engines[^"]*"[^>]*>(.*?)</span>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        urls = anchor_re.findall(text)
+        titles = title_re.findall(text)
+        contents = content_re.findall(text)
+        engines = engine_re.findall(text)
+
+        for idx, match in enumerate(urls):
+            raw_url, raw_url_label = match
+            url = unescape(raw_url.strip())
+            if not url:
+                continue
+            url = urljoin(self.base_url + "/", url)
+            if url in seen:
+                continue
+            seen.add(url)
+
+            title = ""
+            if idx < len(titles):
+                title = self._strip_html(titles[idx])
+            if not title:
+                title = self._strip_html(raw_url_label) or url
+
+            description = self._strip_html(contents[idx]) if idx < len(contents) else ""
+            source = self._strip_html(engines[idx]) if idx < len(engines) else ""
+
+            out.append(
+                SearchResult(
+                    title=title,
+                    url=url,
+                    description=description,
+                    source=source,
+                )
+            )
+            if len(out) >= limit:
+                break
+
+        return out
+
+    def _load_results(self, res: httpx.Response, *, query: str, category: str, language: str, limit: int):
         if res.status_code == 403:
+            try:
+                html_res = self._request_search_html(query=query, category=category, language=language)
+                if html_res.status_code < 400:
+                    parsed = self._parse_html_results(html_res.text, limit=limit)
+                    if parsed:
+                        return {"results": [
+                            {
+                                "title": item.title,
+                                "url": item.url,
+                                "content": item.description,
+                                "engine": item.source,
+                            }
+                            for item in parsed
+                        ]}
+            except Exception:
+                pass
+
             if self.managed and self.auto_restart_on_failure:
                 self.restart()
                 if self.wait_ready(self.startup_timeout_s):
@@ -235,7 +331,7 @@ class SearxngBackend:
 
         try:
             res = self._request_search_json(query=q, category=category, language=language)
-            data = self._load_results(res, query=q, category=category, language=language)
+            data = self._load_results(res, query=q, category=category, language=language, limit=limit)
         except WebSearchUnavailableError:
             raise
         except httpx.TimeoutException as e:

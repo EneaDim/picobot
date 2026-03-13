@@ -9,6 +9,7 @@ class CommandResult:
     should_exit: bool = False
     text: str | None = None
     bus_text: str | None = None
+    new_session_id: str | None = None
 
     @property
     def reply(self) -> str | None:

@@ -8,6 +8,7 @@ from picobot.ui.command_catalog import HELP_TEXT
 
 from picobot.retrieval.ingest import ingest_kb  # noqa: F401
 from picobot.retrieval.query import query_kb  # noqa: F401
+from picobot.session.manager import SessionManager, sanitize_session_id
 from picobot.ui.command_handlers_kb import dispatch_kb_command
 from picobot.ui.command_handlers_media import dispatch_media_command
 from picobot.ui.command_handlers_mem import dispatch_mem_command
@@ -27,6 +28,8 @@ _LOCAL_ONLY_COMMANDS = {
     "/kb",
     "/kb list",
     "/play",
+    "/session",
+    "/session list",
 }
 
 _LOCAL_PREFIXES = (
@@ -35,6 +38,8 @@ _LOCAL_PREFIXES = (
     "/kb query ",
     "/route ",
     "/play ",
+    "/session use ",
+    "/session new ",
 )
 
 _PASSTHROUGH_PREFIXES = (
@@ -74,6 +79,42 @@ def _handle_route_command(*, text: str, session, default_language: str) -> Comma
     return CommandResult(handled=True, text=payload)
 
 
+def _handle_session_command(*, text: str, workspace: Path, current_session_id: str) -> CommandResult | None:
+    raw = " ".join((text or "").strip().split())
+
+    if raw in {"/session", "/session list"}:
+        sm = SessionManager(workspace)
+        names = sm.list()
+        lines = [
+            "Sessioni disponibili",
+            f"- corrente: {current_session_id}",
+        ]
+        if names:
+            lines.append("- elenco:")
+            for name in names:
+                marker = " *" if name == current_session_id else ""
+                lines.append(f"  - {name}{marker}")
+        else:
+            lines.append("- elenco: (nessuna)")
+        return CommandResult(handled=True, text="\n".join(lines))
+
+    for prefix in ("/session use ", "/session new "):
+        if raw.startswith(prefix):
+            requested = raw[len(prefix):].strip()
+            if not requested:
+                return CommandResult(handled=True, text="Uso: /session use <id>")
+            session_id = sanitize_session_id(requested)
+            sm = SessionManager(workspace)
+            sm.get(session_id)
+            return CommandResult(
+                handled=True,
+                text=f"Sessione attiva impostata su: {session_id}",
+                new_session_id=session_id,
+            )
+
+    return None
+
+
 def handle_local_command(
     *,
     raw_text: str,
@@ -82,9 +123,17 @@ def handle_local_command(
     session_id: str,
     orchestrator=None,
 ) -> CommandResult:
-    text = (raw_text or "").strip()
+    text = " ".join((raw_text or "").strip().split())
     if not text.startswith("/"):
         return CommandResult(handled=False)
+
+    session_cmd = _handle_session_command(
+        text=text,
+        workspace=workspace,
+        current_session_id=session_id,
+    )
+    if session_cmd is not None:
+        return session_cmd
 
     session = load_session(workspace=workspace, session_id=session_id)
 
@@ -137,7 +186,7 @@ def handle_local_command(
     result = dispatch_mem_command(
         text=text,
         cfg=cfg,
-        workspace=Path(workspace),
+        workspace=workspace,
         session=session,
     )
     if result is not None:
@@ -146,7 +195,7 @@ def handle_local_command(
     result = dispatch_kb_command(
         text=text,
         cfg=cfg,
-        workspace=Path(workspace),
+        workspace=workspace,
         session=session,
         ingest_fn=ingest_kb,
         query_fn=query_kb,

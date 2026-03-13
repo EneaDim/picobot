@@ -242,9 +242,19 @@ class MemoryFactsStore:
         if not value:
             return
 
-        existing = self.read_items()
-        if value in existing:
-            return
+        rows = self.read_rows()
+        for row in rows:
+            if str(row.get("content") or "").strip() == value:
+                row["updated_at"] = _utc_now()
+                row["confidence"] = float(confidence)
+                row["scope"] = scope
+                row["source"] = source
+                self.path.write_text(
+                    "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows),
+                    encoding="utf-8",
+                )
+                self._sync_legacy_markdown()
+                return
 
         _append_jsonl(self.path, {
             "fact_id": f"fact-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}",
@@ -262,6 +272,20 @@ class MemoryFactsStore:
 
     def read_items(self) -> list[str]:
         return [str(row.get("content") or "").strip() for row in self.read_rows() if str(row.get("content") or "").strip()]
+
+
+    def read_recent_items(self, limit: int = 8) -> list[str]:
+        rows = sorted(
+            self.read_rows(),
+            key=lambda row: str(row.get("updated_at") or ""),
+            reverse=True,
+        )
+        out: list[str] = []
+        for row in rows[:max(0, int(limit))]:
+            value = str(row.get("content") or "").strip()
+            if value:
+                out.append(value)
+        return out
 
     def search(self, query: str) -> tuple[str, float, str] | None:
         items = self.read_items()
