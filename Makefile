@@ -9,38 +9,41 @@ SANDBOX_WORKSPACE ?= $(CURDIR)/.picobot/workspace
 SANDBOX_CONTAINER_WORKSPACE ?= /workspace
 CONFIG_PATH ?= .picobot/config.json
 
-.PHONY: help venv install reinstall clean init init-force compile test run chat cli \
+.PHONY: help venv install reinstall clean init init-force init-config init-config-force \
+        compile test run chat cli \
         sandbox-build sandbox-rebuild sandbox-up sandbox-down sandbox-status sandbox-logs sandbox-shell \
         tools-bootstrap tools-doctor tools-snapshot bootstrap \
-        start start-nodebug stop
+        start start-nodebug stop check-config check-sandbox
 
 help:
-	@echo "Targets disponibili:"
-	@echo "  venv              - crea il virtualenv .venv"
-	@echo "  install           - installa il progetto in editable mode + dev deps"
-	@echo "  reinstall         - reinstalla il progetto nel venv attivo"
-	@echo "  clean             - pulisce cache Python"
-	@echo "  init              - crea .picobot/config.json e struttura base"
-	@echo "  init-force        - rigenera la config forzando overwrite"
-	@echo "  compile           - compileall su picobot e tests"
-	@echo "  test              - esegue pytest"
-	@echo "  run               - avvia picobot"
-	@echo "  chat              - alias di run"
-	@echo "  cli               - alias di run"
-	@echo "  sandbox-build     - build immagine docker sandbox solo se manca"
-	@echo "  sandbox-rebuild   - rebuild forzato immagine docker sandbox"
-	@echo "  sandbox-up        - avvia il container sandbox persistente"
-	@echo "  sandbox-down      - ferma e rimuove il container sandbox"
-	@echo "  sandbox-status    - mostra stato immagine/container sandbox"
-	@echo "  sandbox-logs      - mostra i log del container sandbox"
-	@echo "  sandbox-shell     - apre una shell nel container sandbox"
-	@echo "  tools-bootstrap   - bootstrap runtime tools nel container"
-	@echo "  tools-doctor      - verifica stato runtime tools nel container"
-	@echo "  tools-snapshot    - snapshot leggibile del runtime tools"
-	@echo "  bootstrap         - init + sandbox-rebuild + tools-bootstrap + tools-doctor"
-	@echo "  start             - sandbox-up + avvio picobot con debug CLI attivo"
-	@echo "  start-nodebug     - sandbox-up + avvio picobot senza debug"
-	@echo "  stop              - sandbox-down"
+	@echo "Available targets:"
+	@echo "  venv               - create .venv"
+	@echo "  install            - install project in editable mode + dev deps"
+	@echo "  reinstall          - reinstall project in current venv"
+	@echo "  clean              - remove Python caches"
+	@echo "  init               - full bootstrap: config + sandbox rebuild + sandbox up + tools bootstrap + doctor"
+	@echo "  init-force         - full bootstrap forcing config overwrite"
+	@echo "  init-config        - create .picobot/config.json only"
+	@echo "  init-config-force  - recreate .picobot/config.json forcing overwrite"
+	@echo "  compile            - run compileall on picobot and tests"
+	@echo "  test               - run pytest"
+	@echo "  run                - start picobot"
+	@echo "  chat               - alias of run"
+	@echo "  cli                - alias of run"
+	@echo "  sandbox-build      - build docker sandbox image only if missing"
+	@echo "  sandbox-rebuild    - force rebuild docker sandbox image"
+	@echo "  sandbox-up         - start persistent sandbox container"
+	@echo "  sandbox-down       - stop and remove sandbox container"
+	@echo "  sandbox-status     - show sandbox image/container status"
+	@echo "  sandbox-logs       - show sandbox container logs"
+	@echo "  sandbox-shell      - open a shell in sandbox container"
+	@echo "  tools-bootstrap    - bootstrap runtime tools in container"
+	@echo "  tools-doctor       - verify runtime tools in container"
+	@echo "  tools-snapshot     - human-readable runtime tools snapshot"
+	@echo "  bootstrap          - alias of init"
+	@echo "  start              - sandbox-up + start picobot with CLI debug enabled"
+	@echo "  start-nodebug      - sandbox-up + start picobot without debug"
+	@echo "  stop               - sandbox-down"
 
 venv:
 	python3 -m venv .venv
@@ -60,11 +63,32 @@ clean:
 	find . -type f -name "*.pyc" -delete
 	rm -rf *.egg-info
 
-init:
+init-config:
 	$(PYTHON) -m picobot.config.init
 
-init-force:
+init-config-force:
 	$(PYTHON) -m picobot.config.init --force
+
+check-config:
+	@test -f "$(CONFIG_PATH)" && echo "✅ config OK: $(CONFIG_PATH)" || (echo "❌ config missing: $(CONFIG_PATH)"; exit 1)
+
+check-sandbox:
+	@$(DOCKER) image inspect "$(SANDBOX_IMAGE)" >/dev/null 2>&1 && echo "✅ sandbox image OK: $(SANDBOX_IMAGE)" || (echo "❌ sandbox image missing: $(SANDBOX_IMAGE)"; exit 1)
+	@$(DOCKER) ps --format '{{.Names}}' | grep -Fxq "$(SANDBOX_NAME)" && echo "✅ sandbox container OK: $(SANDBOX_NAME)" || (echo "❌ sandbox container not running: $(SANDBOX_NAME)"; exit 1)
+
+init: init-config sandbox-rebuild sandbox-up tools-bootstrap tools-doctor check-config check-sandbox
+	@echo
+	@echo "========================================"
+	@echo "✅ Picobot init completed successfully"
+	@echo "========================================"
+
+init-force: init-config-force sandbox-rebuild sandbox-up tools-bootstrap tools-doctor check-config check-sandbox
+	@echo
+	@echo "========================================"
+	@echo "✅ Picobot init-force completed"
+	@echo "========================================"
+
+bootstrap: init
 
 compile:
 	$(PYTHON) -m compileall picobot tests
@@ -100,12 +124,11 @@ sandbox-up: sandbox-build
 	@if $(DOCKER) ps --format '{{.Names}}' | grep -Fxq "$(SANDBOX_NAME)"; then \
 		echo "[sandbox] container $(SANDBOX_NAME) already running"; \
 	elif $(DOCKER) ps -a --format '{{.Names}}' | grep -Fxq "$(SANDBOX_NAME)"; then \
-		echo "[sandbox] removing stale container $(SANDBOX_NAME) to refresh uid/gid mapping"; \
+		echo "[sandbox] removing stale container $(SANDBOX_NAME)"; \
 		$(DOCKER) rm -f "$(SANDBOX_NAME)" >/dev/null; \
 		echo "[sandbox] creating container $(SANDBOX_NAME)"; \
 		$(DOCKER) run -d \
 			--name "$(SANDBOX_NAME)" \
-			--user "$$(id -u):$$(id -g)" \
 			-v "$(SANDBOX_WORKSPACE):$(SANDBOX_CONTAINER_WORKSPACE)" \
 			-w "$(SANDBOX_CONTAINER_WORKSPACE)" \
 			"$(SANDBOX_IMAGE)" \
@@ -114,12 +137,12 @@ sandbox-up: sandbox-build
 		echo "[sandbox] creating container $(SANDBOX_NAME)"; \
 		$(DOCKER) run -d \
 			--name "$(SANDBOX_NAME)" \
-			--user "$$(id -u):$$(id -g)" \
 			-v "$(SANDBOX_WORKSPACE):$(SANDBOX_CONTAINER_WORKSPACE)" \
 			-w "$(SANDBOX_CONTAINER_WORKSPACE)" \
 			"$(SANDBOX_IMAGE)" \
 			sleep infinity >/dev/null; \
 	fi
+	@$(DOCKER) ps --format '{{.Names}}' | grep -Fxq "$(SANDBOX_NAME)" || (echo "[sandbox] container failed to start"; $(DOCKER) ps -a; $(DOCKER) logs "$(SANDBOX_NAME)" || true; exit 1)
 	@echo "[sandbox] ready"
 	@mkdir -p "$(SANDBOX_WORKSPACE)/sandbox_runs"
 
@@ -145,18 +168,16 @@ sandbox-logs:
 	@$(DOCKER) logs "$(SANDBOX_NAME)"
 
 sandbox-shell: sandbox-up
-	@$(DOCKER) exec -it -w / "$(SANDBOX_NAME)" sh
+	@$(DOCKER) exec -it -w / "$(SANDBOX_NAME)" bash
 
-tools-bootstrap:
+tools-bootstrap: sandbox-up
 	$(PYTHON) -m picobot.tools.init_tools --config "$(CONFIG_PATH)" bootstrap
 
-tools-doctor:
+tools-doctor: sandbox-up
 	$(PYTHON) -m picobot.tools.init_tools --config "$(CONFIG_PATH)" doctor
 
-tools-snapshot:
+tools-snapshot: sandbox-up
 	$(PYTHON) -m picobot.tools.init_tools --config "$(CONFIG_PATH)" snapshot
-
-bootstrap: init sandbox-rebuild tools-bootstrap tools-doctor
 
 start: sandbox-up
 	PICOBOT_DEBUG_CLI=1 $(PYTHON) -m picobot

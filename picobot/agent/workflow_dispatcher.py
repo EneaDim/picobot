@@ -527,9 +527,27 @@ class WorkflowDispatcher:
             youtube_cfg = getattr(self.orchestrator.cfg.tools, "youtube", None)
             prefer_sub_langs = list(getattr(youtube_cfg, "prefer_sub_langs", []) or [])
 
+            lang_norm = (lang or "").strip().lower()
+            preferred = []
+            if lang_norm.startswith("it"):
+                preferred.extend(["it", "it-IT", "it_IT"])
+            elif lang_norm.startswith("en"):
+                preferred.extend(["en", "en-US", "en_US"])
+            preferred.extend(prefer_sub_langs)
+            preferred.extend(["it", "it-IT", "en", "en-US"])
+
+            dedup = []
+            seen = set()
+            for item in preferred:
+                key = str(item).strip()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                dedup.append(key)
+
             result = await self._execute_tool(
                 "yt_summary",
-                YTSummaryArgs(url=url, lang=lang, prefer_sub_langs=prefer_sub_langs).model_dump(),
+                YTSummaryArgs(url=url, lang=lang, prefer_sub_langs=dedup).model_dump(),
                 hooks=hooks,
                 workflow_name="youtube_summarizer",
             )
@@ -543,8 +561,15 @@ class WorkflowDispatcher:
 
         if not result.get("ok"):
             err = str(result.get("error") or "yt_summary failed")
+            if lang == "it" and ("429" in err or "Too Many Requests" in err):
+                msg = (
+                    "Riassunto YouTube fallito: YouTube sta limitando temporaneamente il download del transcript "
+                    "(HTTP 429). Prova più tardi oppure allinea cookies / user-agent / pacing del backend yt-dlp."
+                )
+            else:
+                msg = (f"Riassunto YouTube fallito: {err}" if lang == "it" else f"YouTube summary failed: {err}")
             return TurnResult(
-                content=(f"Riassunto YouTube fallito: {err}" if lang == "it" else f"YouTube summary failed: {err}"),
+                content=msg,
                 action="workflow",
                 reason="youtube tool failed",
                 audit={"workflow_name": "youtube_summarizer", "url": url},

@@ -148,7 +148,7 @@ def tool_snapshot(config_path: str | Path | None = None) -> dict[str, Any]:
         argv=[
             "bash",
             "-lc",
-            "command -v yt-dlp || true; command -v ffmpeg || true; command -v whisper-cli || true; command -v piper || true; "
+            "command -v yt-dlp || true; command -v ffmpeg || true; command -v whisper || true; command -v whisper-cli || true; command -v piper || true; "
             "ls -1 /opt/picobot/models/piper 2>/dev/null || true; "
             "ls -1 /opt/picobot/models/whisper 2>/dev/null || true",
         ],
@@ -178,7 +178,7 @@ def bootstrap_tools(config_path: str | None = None) -> dict[str, Any]:
 
     result = _docker_run(
         cfg,
-        argv=["bash", "-lc", "picobot-runtime-bootstrap"],
+        argv=["bash", "-lc", "command -v picobot-runtime-bootstrap >/dev/null 2>&1 && picobot-runtime-bootstrap"],
         extra_env={
             "PICO_BOOTSTRAP_TOOLS": "1",
             "PICO_PIPER_VOICES": voices,
@@ -218,7 +218,7 @@ def tool_doctor(config_path: str | None = None) -> dict[str, Any]:
 
     binaries = _docker_run(
         cfg,
-        argv=["bash", "-lc", "command -v yt-dlp && command -v ffmpeg && command -v whisper-cli && command -v piper"],
+        argv=["bash", "-lc", "command -v yt-dlp && command -v ffmpeg && command -v whisper && command -v whisper-cli && command -v piper"],
         config_path=resolved_cfg,
     )
     checks.append({
@@ -261,31 +261,27 @@ def tool_doctor(config_path: str | None = None) -> dict[str, Any]:
     }
 
 
-__all__ = [
-    "bootstrap_tools",
-    "tool_doctor",
-    "tool_snapshot",
-    "resolve_config_path",
-]
-
-
-def main() -> None:
+def main() -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Docker-aware tool bootstrap / doctor for picobot")
-    parser.add_argument("--config", default=None, help="Path to config.json")
-    parser.add_argument("command", choices=["snapshot", "doctor", "bootstrap"], nargs="?", default="snapshot")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=None)
+    parser.add_argument("action", choices=["snapshot", "bootstrap", "doctor"])
     args = parser.parse_args()
 
-    if args.command == "snapshot":
-        result = tool_snapshot(args.config)
-    elif args.command == "doctor":
-        result = tool_doctor(args.config)
-    else:
-        result = bootstrap_tools(args.config)
+    if args.action == "snapshot":
+        print(json.dumps(tool_snapshot(args.config), ensure_ascii=False, indent=2))
+        return 0
 
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if args.action == "bootstrap":
+        out = bootstrap_tools(args.config)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0 if out.get("ok") else 1
+
+    out = tool_doctor(args.config)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0 if out.get("ok") else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

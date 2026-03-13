@@ -17,41 +17,6 @@ download() {
   fi
 }
 
-install_piper_bundle() {
-  if command -v piper >/dev/null 2>&1; then
-    return 0
-  fi
-
-  local tmpdir
-  tmpdir="$(mktemp -d)"
-  curl -L --fail --retry 3 -o "$tmpdir/piper.tar.gz" \
-    "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz"
-  tar -xzf "$tmpdir/piper.tar.gz" -C "$tmpdir"
-
-  local extracted
-  extracted="$(find "$tmpdir" -type f -name piper | head -n1)"
-  if [ -z "$extracted" ]; then
-    echo "Piper binary non trovato nel bundle estratto" >&2
-    return 1
-  fi
-
-  mkdir -p /usr/local/bin
-  cp "$extracted" /usr/local/bin/piper
-  chmod +x /usr/local/bin/piper
-
-  local root
-  root="$(dirname "$extracted")"
-  if [ -d "$root/espeak-ng-data" ]; then
-    rm -rf /opt/picobot/runtime/espeak-ng-data
-    cp -r "$root/espeak-ng-data" /opt/picobot/runtime/espeak-ng-data
-  fi
-
-  mkdir -p /opt/picobot/runtime/lib
-  find "$root" -maxdepth 1 -type f \( -name '*.so*' -o -name '*.ort' \) -exec cp {} /opt/picobot/runtime/lib/ \;
-
-  rm -rf "$tmpdir"
-}
-
 voice_url_base() {
   local voice="$1"
   IFS='-' read -r locale rest <<< "$voice"
@@ -121,12 +86,12 @@ verify_runtime() {
   command -v yt-dlp >/dev/null 2>&1
   command -v ffmpeg >/dev/null 2>&1
   command -v piper >/dev/null 2>&1
+  command -v whisper >/dev/null 2>&1
   command -v whisper-cli >/dev/null 2>&1
   test -f /opt/picobot/models/whisper/ggml-small.bin
 }
 
 if [ "$PICO_BOOTSTRAP_TOOLS" = "1" ]; then
-  install_piper_bundle
   install_piper_voices
   install_whisper_model
   verify_runtime

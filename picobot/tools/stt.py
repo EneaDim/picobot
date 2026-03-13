@@ -113,6 +113,36 @@ def _infer_lang_from_sidecar(audio_path: Path) -> str | None:
     return None
 
 
+def _candidate_transcript_paths(audio_path: Path) -> list[Path]:
+    stem_no_suffix = audio_path.with_suffix("")
+    return [
+        audio_path.with_suffix(".txt"),
+        Path(str(audio_path) + ".txt"),
+        stem_no_suffix.with_suffix(".txt"),
+        audio_path.parent / f"{audio_path.stem}.txt",
+    ]
+
+
+def _find_transcript_file(audio_path: Path) -> Path | None:
+    for candidate in _candidate_transcript_paths(audio_path):
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    nearby = sorted(audio_path.parent.glob("*.txt"))
+    if len(nearby) == 1:
+        return nearby[0]
+
+    preferred = [p for p in nearby if p.stem.startswith(audio_path.stem)]
+    if preferred:
+        return preferred[0]
+
+    return None
+
+
+def _converted_audio_path(audio_path: Path) -> Path:
+    return audio_path.with_name(f"{audio_path.stem}.stt16k.wav")
+
+
 async def transcribe_audio_file(
     cfg,
     *,
@@ -122,6 +152,7 @@ async def transcribe_audio_file(
     backend_name = "whisper.cpp"
 
     cli = get_runtime_tool_bin(cfg, "whisper_cpp_cli", "whisper")
+    ffmpeg_bin = get_runtime_tool_bin(cfg, "ffmpeg", "ffmpeg")
 
     model = str(getattr(getattr(getattr(cfg, "tools", None), "whisper", None), "model", "") or "").strip()
     if not model:
@@ -129,7 +160,7 @@ async def transcribe_audio_file(
 
     runner = TerminalToolBase(
         cfg=cfg,
-        allowed_bins=[cli or "whisper"],
+        allowed_bins=[cli or "whisper", "whisper", "whisper-cli", ffmpeg_bin or "ffmpeg", "ffmpeg"],
         timeout_s=300,
         max_output_bytes=200_000,
     )
@@ -157,7 +188,10 @@ async def transcribe_audio_file(
 
     try:
         staged_audio = _stage_audio_into_workspace(runner, audio_path)
-        runtime_audio = _runtime_path(runner, staged_audio, purpose="audio input")
+        converted_audio = _converted_audio_path(staged_audio)
+
+        runtime_audio_in = _runtime_path(runner, staged_audio, purpose="audio input")
+        runtime_audio_16k = _runtime_path(runner, converted_audio, purpose="converted audio")
         runtime_model = _runtime_path(runner, model_path, purpose="whisper model")
     except Exception as exc:
         return STTResult(
@@ -174,21 +208,57 @@ async def transcribe_audio_file(
         if inferred_lang:
             effective_lang = inferred_lang
 
-    transcript_txt = staged_audio.with_suffix(".txt")
     transcript_meta = staged_audio.with_suffix(".stt.meta.json")
-    transcript_base = str(Path(runtime_audio).with_suffix(""))
+    transcript_base = str(Path(runtime_audio_16k).with_suffix(""))
 
-    if transcript_txt.exists():
-        transcript_txt.unlink()
+    for candidate in _candidate_transcript_paths(converted_audio):
+        try:
+            if candidate.exists():
+                candidate.unlink()
+        except Exception:
+            pass
+
+    try:
+        if converted_audio.exists():
+            converted_audio.unlink()
+    except Exception:
+        pass
+
     if transcript_meta.exists():
         transcript_meta.unlink()
 
+    # Step 1: normalize audio to 16 kHz mono WAV for whisper.cpp
+    ffmpeg_cmd = [
+        _runtime_bin(runner, ffmpeg_bin or "ffmpeg"),
+        "-y",
+        "-i",
+        runtime_audio_in,
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        runtime_audio_16k,
+    ]
+
+    ffmpeg_res = runner.run_cmd(ffmpeg_cmd, prefix="[stt:ffmpeg]", timeout_s=120)
+    if ffmpeg_res.returncode != 0:
+        return STTResult(
+            text="",
+            language=effective_lang,
+            backend=backend_name,
+            ok=False,
+            detail=(ffmpeg_res.stderr or ffmpeg_res.stdout or "ffmpeg conversion failed").strip(),
+        )
+
+    # Step 2: run whisper on converted file
     cmd = [
         _runtime_bin(runner, cli or "whisper"),
         "-m",
         runtime_model,
         "-f",
-        runtime_audio,
+        runtime_audio_16k,
         "-otxt",
         "-of",
         transcript_base,
@@ -206,13 +276,19 @@ async def transcribe_audio_file(
             detail=(res.stderr or res.stdout or "whisper.cpp failed").strip(),
         )
 
-    if not transcript_txt.exists():
+    transcript_txt = _find_transcript_file(converted_audio)
+    if transcript_txt is None:
+        detail = (res.stderr or "").strip()
+        if res.stdout:
+            detail = (detail + "\n" + res.stdout.strip()).strip() if detail else res.stdout.strip()
+        if not detail:
+            detail = "transcript file not produced"
         return STTResult(
             text="",
             language=effective_lang,
             backend=backend_name,
             ok=False,
-            detail="transcript file not produced",
+            detail=detail,
         )
 
     text = transcript_txt.read_text(encoding="utf-8", errors="replace").strip()
@@ -222,6 +298,7 @@ async def transcribe_audio_file(
                 "backend": runner.backend,
                 "engine": backend_name,
                 "audio_path": str(staged_audio),
+                "normalized_audio_path": str(converted_audio),
                 "language": effective_lang,
                 "text_path": str(transcript_txt),
                 "model_path": model,
